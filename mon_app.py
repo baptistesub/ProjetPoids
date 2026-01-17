@@ -132,6 +132,10 @@ def init_state():
                 st.session_state["garde_manger"] = DEFAULTS_PANTRY.copy()
                 push_to_cloud("garde_manger", st.session_state["garde_manger"])
             st.session_state["data_loaded"] = True
+    
+    # Initialisation du Plateau Repas temporaire (V17)
+    if "basket" not in st.session_state:
+        st.session_state.basket = []
 
 def save_data(key, new_data):
     st.session_state[key] = new_data
@@ -142,8 +146,8 @@ def get_today_str(): return datetime.now().strftime("%Y-%m-%d")
 # ==============================================================================
 # INTERFACE
 # ==============================================================================
-st.set_page_config(page_title="Le Portionneur V16.1", page_icon="🥪", layout="wide")
-st.title("🥪 Le Portionneur : Mode Assemblage")
+st.set_page_config(page_title="Le Portionneur V17", page_icon="🏗️", layout="wide")
+st.title("🏗️ Le Portionneur : Plateau Repas")
 
 init_state()
 
@@ -161,12 +165,12 @@ JOURS = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("🎯 Objectifs")
-    obj_cal = st.number_input("Cible Kcal", 1500, 4000, 2000, step=50)
+    obj_cal = st.number_input("Cible Kcal Jour", 1500, 4000, 2000, step=50)
     st.caption(f"P: {int(obj_cal*0.3/4)}g | G: {int(obj_cal*0.4/4)}g | L: {int(obj_cal*0.3/9)}g")
     
     st.write("---")
     if st.button("🔄 Synchro"):
-        for k in st.session_state.keys(): del st.session_state[k]
+        for k in list(st.session_state.keys()): del st.session_state[k]
         st.rerun()
     if st.button("🧹 Reset Semaine"):
         st.session_state["planning"] = {}
@@ -178,7 +182,7 @@ with st.sidebar:
 
 tabs = st.tabs(["🏠 Cockpit", "🔮 Oracle", "🛒 Courses", "🥫 Garde-Manger (IA)", "👨‍🍳 Recettes", "📅 Planning", "⚖️ Poids", "🧽 Plats"])
 
-# --- 1. COCKPIT (NOUVEAU MODE DUAL) ---
+# --- 1. COCKPIT (AVEC PLATEAU REPAS) ---
 with tabs[0]:
     # Totaux Jour
     today = get_today_str()
@@ -188,22 +192,18 @@ with tabs[0]:
     tot_g = sum([e.get('gluc', 0) for e in journal[today]])
     tot_l = sum([e.get('lip', 0) for e in journal[today]])
     
-    # Barre de progression globale
     st.markdown(f"### 📊 Total Jour : {int(tot_k)} / {obj_cal} kcal")
     st.progress(min(tot_k/obj_cal, 1.0))
     c_p, c_g, c_l = st.columns(3)
     c_p.caption(f"Prot: {int(tot_p)}g"); c_g.caption(f"Gluc: {int(tot_g)}g"); c_l.caption(f"Lip: {int(tot_l)}g")
     st.write("---")
 
-    # LES DEUX MODES DE REPAS
     col_recette, col_separateur, col_assemblage = st.columns([10, 1, 10])
     
-    # ---------------------------------------------------------
-    # MODE 1 : RECETTES (Le classique)
-    # ---------------------------------------------------------
+    # --- MODE 1 : RECETTES ---
     with col_recette:
-        st.subheader("🍲 Plats Cuisinés")
-        st.caption("Pour les plats mélangés (Chili, Pâtes carbo...)")
+        st.subheader("🍲 Plat Cuisiné")
+        st.caption("Recette mélangeant plusieurs ingrédients")
         
         if not recettes: st.warning("Crée des recettes !")
         else:
@@ -212,7 +212,6 @@ with tabs[0]:
             h = now.hour
             mom = "Matin" if h<11 else "Midi" if h<15 else "Collation" if h<18 else "Soir"
             
-            # Auto-select planning
             idx, obj_repas = 0, 600
             if jour in planning and mom in planning[jour]:
                 p = planning[jour][mom]
@@ -221,13 +220,13 @@ with tabs[0]:
                     obj_repas = p["cible"]
                     st.info(f"📅 {jour} {mom} : {p['recette']}")
 
-            ch = st.selectbox("Choisir Recette", sorted(list(recettes.keys())), index=idx, key="m_s")
+            ch = st.selectbox("Recette", sorted(list(recettes.keys())), index=idx, key="m_s")
             r_data = recettes[ch]
             
             c1, c2 = st.columns(2)
             with c1:
                 tr = st.checkbox("Tare", True, key="m_t")
-                pa = st.number_input("Poids Balance (Total)", 0, step=10, key="m_p")
+                pa = st.number_input("Poids Total Cuit", 0, step=10, key="m_p")
                 pn = pa
                 if tr and plats_vides:
                     pl = st.selectbox("Contenant", list(plats_vides.keys()), key="m_pl")
@@ -253,52 +252,93 @@ with tabs[0]:
                     st.rerun()
 
     with col_separateur:
-        st.markdown("<div style='border-left:1px solid #333; height:400px'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='border-left:1px solid #333; height:500px'></div>", unsafe_allow_html=True)
 
-    # ---------------------------------------------------------
-    # MODE 2 : ASSEMBLAGE (Le nouveau pour tes tartines)
-    # ---------------------------------------------------------
+    # --- MODE 2 : PLATEAU REPAS (ASSEMBLAGE) ---
     with col_assemblage:
-        st.subheader("🥪 Assemblage / Snack")
-        st.caption("Pour les aliments séparés (Pain, Fromage, Fruits...)")
-        
-        # State pour l'ajout rapide
+        st.subheader("🥪 Assemblage / Plateau")
+        st.caption("Construis ton repas ingrédient par ingrédient")
+
+        # 1. Selecteur et Ajout au Panier
         def upd_direct():
             i, w = st.session_state.d_n, st.session_state.d_p
             if i and i in pantry:
                 infos = normalize_ingredient(pantry[i])
                 f = w / 100
                 st.session_state.d_k = int(infos['kcal'] * f)
-                st.session_state.d_pr = int(infos['prot'] * f)
-                st.session_state.d_gl = int(infos['gluc'] * f)
-                st.session_state.d_li = int(infos['lip'] * f)
 
-        d_ing = st.selectbox("Ingrédient", [""] + sorted(list(pantry.keys())), key="d_n", on_change=upd_direct)
-        d_pds = st.number_input("Poids (g)", 0, step=10, key="d_p", on_change=upd_direct)
+        c_add1, c_add2 = st.columns([2, 1])
+        d_ing = c_add1.selectbox("Ingrédient", [""] + sorted(list(pantry.keys())), key="d_n", on_change=upd_direct)
+        d_pds = c_add2.number_input("Poids (g)", 0, step=10, key="d_p", on_change=upd_direct)
         
-        # Infos calculées
-        dk = st.number_input("Kcal", 0, key="d_k", disabled=True)
-        # On stocke les macros dans des variables invisibles ou juste affichées
-        if d_ing:
-            st.caption(f"Macros estimées : P:{st.session_state.get('d_pr',0)} | G:{st.session_state.get('d_gl',0)} | L:{st.session_state.get('d_li',0)}")
-        
-        if st.button("🍴 Manger cet ingrédient", type="primary", key="btn_eat_direct"):
+        # Bouton Ajouter au plateau
+        if st.button("⬇️ Poser sur le plateau", key="btn_add_bsk"):
             if d_ing and d_pds > 0:
-                journal[today].append({
-                    "heure": datetime.now().strftime("%H:%M"), 
-                    "recette": f"🔹 {d_ing}", # On met un petit logo pour distinguer
-                    "poids": d_pds, 
-                    "kcal": dk, 
-                    "prot": st.session_state.get('d_pr',0), 
-                    "gluc": st.session_state.get('d_gl',0), 
-                    "lip": st.session_state.get('d_li',0)
+                infos = normalize_ingredient(pantry[d_ing])
+                f = d_pds / 100
+                st.session_state.basket.append({
+                    "nom": d_ing,
+                    "poids": d_pds,
+                    "kcal": int(infos['kcal'] * f),
+                    "prot": int(infos['prot'] * f),
+                    "gluc": int(infos['gluc'] * f),
+                    "lip": int(infos['lip'] * f)
                 })
-                save_data("journal", journal)
-                st.success(f"Miam ! {d_ing} ajouté.")
-                time.sleep(0.5)
+                # Reset inputs (via rerun ou juste state clean)
+                st.session_state.d_n = ""
+                st.session_state.d_p = 0
                 st.rerun()
+
+        # 2. Visualisation du Plateau
+        st.write("---")
+        st.markdown("#### 🍽️ Ton Plateau")
         
-        st.info("💡 Astuce : Ajoute tes tartines élément par élément (Pain, puis Saumon, puis Avocat).")
+        bsk_tot_k = sum([x['kcal'] for x in st.session_state.basket])
+        bsk_tot_p = sum([x['prot'] for x in st.session_state.basket])
+        
+        # Liste des items du panier
+        if not st.session_state.basket:
+            st.info("Plateau vide.")
+        else:
+            for i, item in enumerate(st.session_state.basket):
+                c1, c2, c3, c4 = st.columns([4, 2, 2, 1])
+                c1.text(f"{item['nom']}")
+                c2.text(f"{item['poids']}g")
+                c3.text(f"{item['kcal']}k")
+                if c4.button("X", key=f"rm_bsk_{i}"):
+                    st.session_state.basket.pop(i)
+                    st.rerun()
+            
+            st.write("---")
+            # CIBLE DU PLATEAU
+            target_repas = st.number_input("🎯 Objectif pour ce repas (kcal)", value=600, step=50)
+            
+            # Indicateur visuel
+            delta = bsk_tot_k - target_repas
+            msg_delta = f"⚠️ Trop (+{delta})" if delta > 0 else f"✅ Marge (-{abs(delta)})"
+            col_res1, col_res2 = st.columns(2)
+            col_res1.metric("Total Plateau", f"{bsk_tot_k} kcal", delta=f"{delta} vs Objectif", delta_color="inverse")
+            col_res2.metric("Protéines", f"{bsk_tot_p} g")
+            
+            # 3. Validation Finale
+            if st.button("🍴 Tout Manger (Valider)", type="primary", use_container_width=True):
+                now_h = datetime.now().strftime("%H:%M")
+                for item in st.session_state.basket:
+                    journal[today].append({
+                        "heure": now_h,
+                        "recette": f"🔹 {item['nom']}",
+                        "poids": item['poids'],
+                        "kcal": item['kcal'],
+                        "prot": item['prot'],
+                        "gluc": item['gluc'],
+                        "lip": item['lip']
+                    })
+                save_data("journal", journal)
+                st.session_state.basket = [] # Vider le panier
+                st.success("Repas validé !")
+                time.sleep(1)
+                st.rerun()
+
 
 # --- 2. L'ORACLE ---
 with tabs[1]:
@@ -307,9 +347,7 @@ with tabs[1]:
     else:
         dates = sorted(poids_data.keys())
         p1, p2 = poids_data[dates[0]], poids_data[dates[-1]]
-        d1 = datetime.strptime(dates[0], "%Y-%m-%d")
-        d2 = datetime.strptime(dates[-1], "%Y-%m-%d")
-        days = (d2 - d1).days
+        days = (datetime.strptime(dates[-1], "%Y-%m-%d") - datetime.strptime(dates[0], "%Y-%m-%d")).days
         if days > 0:
             vitesse = (p1 - p2) / days
             c1, c2 = st.columns(2)
@@ -406,21 +444,17 @@ with tabs[4]:
                 f = np / 100
                 st.session_state.ti.append({"nom": ni, "poids": np, "cal": nk, "prot": infos['prot']*f, "gluc": infos['gluc']*f, "lip": infos['lip']*f})
             
-            tot_k=sum([x['cal'] for x in st.session_state.ti])
-            
-            # --- CORRECTION DU BUG ICI ---
-            # On vérifie si la liste est vide avant d'afficher le tableau
+            # TABLEAU SECURISE
             if st.session_state.ti:
                 st.table(pd.DataFrame(st.session_state.ti)[['nom', 'poids', 'cal']])
             else:
-                st.info("Aucun ingrédient pour l'instant.")
-            # -----------------------------
-            
+                st.info("Aucun ingrédient.")
+
             if st.button("💾 Sauver") and rn:
-                recettes[rn] = {"total_cal": tot_k, "total_prot": sum([x['prot'] for x in st.session_state.ti]), "ingredients": st.session_state.ti}
+                recettes[rn] = {"total_cal": sum([x['cal'] for x in st.session_state.ti]), "total_prot": sum([x['prot'] for x in st.session_state.ti]), "ingredients": st.session_state.ti}
                 save_data("recettes", recettes); st.rerun()
 
-# --- 6. PLANNING ---
+# --- 6. PLANNING & 7. POIDS/PLATS ---
 with tabs[5]:
     lr = ["(Rien)"] + sorted(list(recettes.keys()))
     if not planning: planning = {}
@@ -444,7 +478,6 @@ with tabs[5]:
                     if st.session_state[f"st_{j}_{m}"]["recette"] != "(Rien)": np[j][m] = st.session_state[f"st_{j}_{m}"]
             save_data("planning", np); st.rerun()
 
-# --- 7. POIDS & PLATS ---
 with tabs[6]:
     w = st.number_input("Kg", 0.0, key="wp")
     if st.button("S") and w>0: poids_data[today]=w; save_data("poids", poids_data); st.rerun()
