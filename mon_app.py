@@ -30,16 +30,15 @@ TABS_MAPPING = {
     "poids": "poids"
 }
 
-# --- OUTILS EXTERNES (OPENFOODFACTS & PDF) ---
+# --- OUTILS EXTERNES ---
 def search_openfoodfacts(query):
-    """Cherche un produit sur la base mondiale"""
     url = f"https://world.openfoodfacts.org/cgi/search.pl?search_terms={query}&search_simple=1&action=process&json=1"
     try:
         r = requests.get(url, timeout=5)
         data = r.json()
         results = []
         if "products" in data:
-            for p in data["products"][:5]: # Top 5 résultats
+            for p in data["products"][:5]:
                 nutri = p.get("nutriments", {})
                 results.append({
                     "nom": p.get("product_name", "Inconnu"),
@@ -80,10 +79,9 @@ def detect_rayon(nom):
     return "🛒 Divers"
 
 # ==============================================================================
-# GESTION DONNÉES & MIGRATION MACROS
+# GESTION DONNÉES
 # ==============================================================================
 def normalize_ingredient(val):
-    """Transforme un simple chiffre (V14) en dictionnaire macros (V15)"""
     if isinstance(val, (int, float)):
         return {"kcal": int(val), "prot": 0, "gluc": 0, "lip": 0}
     return val
@@ -96,8 +94,6 @@ def fetch_from_cloud(key):
         raw_data = worksheet.acell('A1').value
         if not raw_data: return {}
         data = json.loads(raw_data)
-        
-        # MIGRATION AUTOMATIQUE V15
         if key == "garde_manger":
             new_data = {}
             for k, v in data.items():
@@ -117,7 +113,6 @@ def push_to_cloud(key, data):
     except Exception as e:
         st.error(f"Erreur cloud: {e}")
 
-# Données par défaut (Format V15)
 DEFAULTS_PANTRY = {
     "Pâtes (Cru)": {"kcal": 360, "prot": 12, "gluc": 70, "lip": 1},
     "Riz (Cru)": {"kcal": 350, "prot": 7, "gluc": 78, "lip": 0.5},
@@ -129,11 +124,10 @@ DEFAULTS_PANTRY = {
 def init_state():
     keys = ["recettes", "plats", "planning", "journal", "poids", "garde_manger"]
     if "data_loaded" not in st.session_state:
-        with st.spinner('Mise à jour vers V15 (Macros & IA)...'):
+        with st.spinner('Chargement...'):
             for k in keys:
                 st.session_state[k] = fetch_from_cloud(k)
                 time.sleep(0.2)
-            # Init Garde Manger si vide
             if not st.session_state["garde_manger"]:
                 st.session_state["garde_manger"] = DEFAULTS_PANTRY.copy()
                 push_to_cloud("garde_manger", st.session_state["garde_manger"])
@@ -148,12 +142,12 @@ def get_today_str(): return datetime.now().strftime("%Y-%m-%d")
 # ==============================================================================
 # INTERFACE
 # ==============================================================================
-st.set_page_config(page_title="Coach Ultimate V15", page_icon="🦁", layout="wide")
-st.title("🦁 Le Portionneur : Ultimate")
+st.set_page_config(page_title="Le Portionneur V16", page_icon="🥪", layout="wide")
+st.title("🥪 Le Portionneur : Mode Assemblage")
 
 init_state()
 
-# Raccourcis State
+# Raccourcis
 recettes = st.session_state["recettes"]
 plats_vides = st.session_state["plats"]
 planning = st.session_state["planning"]
@@ -166,13 +160,9 @@ JOURS = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.header("🎯 Objectifs Macros")
+    st.header("🎯 Objectifs")
     obj_cal = st.number_input("Cible Kcal", 1500, 4000, 2000, step=50)
-    # Répartition classique 30% P / 40% G / 30% L
-    c1, c2, c3 = st.columns(3)
-    obj_prot = c1.number_input("Prot (g)", value=int(obj_cal*0.3/4))
-    obj_gluc = c2.number_input("Gluc (g)", value=int(obj_cal*0.4/4))
-    obj_lip = c3.number_input("Lip (g)", value=int(obj_cal*0.3/9))
+    st.caption(f"P: {int(obj_cal*0.3/4)}g | G: {int(obj_cal*0.4/4)}g | L: {int(obj_cal*0.3/9)}g")
     
     st.write("---")
     if st.button("🔄 Synchro"):
@@ -188,38 +178,33 @@ with st.sidebar:
 
 tabs = st.tabs(["🏠 Cockpit", "🔮 Oracle", "🛒 Courses", "🥫 Garde-Manger (IA)", "👨‍🍳 Recettes", "📅 Planning", "⚖️ Poids", "🧽 Plats"])
 
-# --- 1. COCKPIT (AVEC MACROS) ---
+# --- 1. COCKPIT (NOUVEAU MODE DUAL) ---
 with tabs[0]:
-    col_main, col_trk = st.columns([2, 1])
+    # Totaux Jour
     today = get_today_str()
     if today not in journal: journal[today] = []
-    
-    # Calcul Totaux Jour
     tot_k = sum([e['kcal'] for e in journal[today]])
     tot_p = sum([e.get('prot', 0) for e in journal[today]])
     tot_g = sum([e.get('gluc', 0) for e in journal[today]])
     tot_l = sum([e.get('lip', 0) for e in journal[today]])
     
-    with col_trk:
-        st.markdown("### 📊 Aujourd'hui")
-        st.metric("Kcal", f"{int(tot_k)} / {obj_cal}")
-        st.progress(min(tot_k/obj_cal, 1.0))
-        
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Prot", f"{int(tot_p)}", delta=f"{int(tot_p-obj_prot)}")
-        c2.metric("Gluc", f"{int(tot_g)}", delta=f"{int(tot_g-obj_gluc)}")
-        c3.metric("Lip", f"{int(tot_l)}", delta=f"{int(tot_l-obj_lip)}")
-        
-        with st.expander("⚡ Express"):
-            xn = st.text_input("Quoi", key="xn")
-            xk = st.number_input("Kcal", 0, key="xk")
-            xp = st.number_input("Prot", 0, key="xp")
-            if st.button("Add", key="xb") and xn:
-                journal[today].append({"heure": datetime.now().strftime("%H:%M"), "recette": f"⚡ {xn}", "poids": 0, "kcal": xk, "prot": xp, "gluc": 0, "lip": 0})
-                save_data("journal", journal)
-                st.rerun()
+    # Barre de progression globale
+    st.markdown(f"### 📊 Total Jour : {int(tot_k)} / {obj_cal} kcal")
+    st.progress(min(tot_k/obj_cal, 1.0))
+    c_p, c_g, c_l = st.columns(3)
+    c_p.caption(f"Prot: {int(tot_p)}g"); c_g.caption(f"Gluc: {int(tot_g)}g"); c_l.caption(f"Lip: {int(tot_l)}g")
+    st.write("---")
 
-    with col_main:
+    # LES DEUX MODES DE REPAS
+    col_recette, col_separateur, col_assemblage = st.columns([10, 1, 10])
+    
+    # ---------------------------------------------------------
+    # MODE 1 : RECETTES (Le classique)
+    # ---------------------------------------------------------
+    with col_recette:
+        st.subheader("🍲 Plats Cuisinés")
+        st.caption("Pour les plats mélangés (Chili, Pâtes carbo...)")
+        
         if not recettes: st.warning("Crée des recettes !")
         else:
             now = datetime.now() + timedelta(hours=1)
@@ -227,6 +212,7 @@ with tabs[0]:
             h = now.hour
             mom = "Matin" if h<11 else "Midi" if h<15 else "Collation" if h<18 else "Soir"
             
+            # Auto-select planning
             idx, obj_repas = 0, 600
             if jour in planning and mom in planning[jour]:
                 p = planning[jour][mom]
@@ -235,77 +221,105 @@ with tabs[0]:
                     obj_repas = p["cible"]
                     st.info(f"📅 {jour} {mom} : {p['recette']}")
 
-            ch = st.selectbox("Plat", sorted(list(recettes.keys())), index=idx, key="m_s")
-            # Recup Macros Recette
+            ch = st.selectbox("Choisir Recette", sorted(list(recettes.keys())), index=idx, key="m_s")
             r_data = recettes[ch]
-            ct = r_data['total_cal']
-            
-            # Si anciennes recettes (V14), on met 0 en macros
-            cp = r_data.get('total_prot', 0)
             
             c1, c2 = st.columns(2)
             with c1:
                 tr = st.checkbox("Tare", True, key="m_t")
-                pa = st.number_input("Poids Balance", 1000, step=10, key="m_p")
+                pa = st.number_input("Poids Balance (Total)", 0, step=10, key="m_p")
                 pn = pa
                 if tr and plats_vides:
                     pl = st.selectbox("Contenant", list(plats_vides.keys()), key="m_pl")
                     pn = max(0, pa - plats_vides[pl])
-                    st.caption(f"Net: **{pn}g**")
-            with c2: ob = st.number_input("Objectif Kcal", value=obj_repas, step=50, key="m_o")
+                    if pn > 0: st.caption(f"Nourriture: **{pn}g**")
+            with c2: ob = st.number_input("Cible Kcal", value=obj_repas, step=50, key="m_o")
             
             if pn > 0:
-                ratio = ob / ct
+                ratio = ob / r_data['total_cal']
                 por = ratio * pn
-                final_p = cp * ratio
-                final_g = r_data.get('total_gluc', 0) * ratio
-                final_l = r_data.get('total_lip', 0) * ratio
+                fp = r_data.get('total_prot', 0) * ratio
+                fg = r_data.get('total_gluc', 0) * ratio
+                fl = r_data.get('total_lip', 0) * ratio
                 
-                st.success(f"👉 Portion : **{int(por)} g**")
-                st.caption(f"Apport : {int(ob)} kcal | {int(final_p)}g Prot | {int(final_g)}g Gluc | {int(final_l)}g Lip")
+                st.success(f"👉 Sers-toi : **{int(por)} g**")
                 
-                if st.button("✅ Manger", type="primary"):
+                if st.button("✅ Valider Recette", type="primary"):
                     journal[today].append({
-                        "heure": now.strftime("%H:%M"), 
-                        "recette": ch, 
-                        "poids": int(por), 
-                        "kcal": ob,
-                        "prot": int(final_p),
-                        "gluc": int(final_g),
-                        "lip": int(final_l)
+                        "heure": now.strftime("%H:%M"), "recette": ch, "poids": int(por), 
+                        "kcal": ob, "prot": int(fp), "gluc": int(fg), "lip": int(fl)
                     })
                     save_data("journal", journal)
                     st.rerun()
 
-# --- 2. L'ORACLE (PREDICTION) ---
+    with col_separateur:
+        st.markdown("<div style='border-left:1px solid #333; height:400px'></div>", unsafe_allow_html=True)
+
+    # ---------------------------------------------------------
+    # MODE 2 : ASSEMBLAGE (Le nouveau pour tes tartines)
+    # ---------------------------------------------------------
+    with col_assemblage:
+        st.subheader("🥪 Assemblage / Snack")
+        st.caption("Pour les aliments séparés (Pain, Fromage, Fruits...)")
+        
+        # State pour l'ajout rapide
+        def upd_direct():
+            i, w = st.session_state.d_n, st.session_state.d_p
+            if i and i in pantry:
+                infos = normalize_ingredient(pantry[i])
+                f = w / 100
+                st.session_state.d_k = int(infos['kcal'] * f)
+                st.session_state.d_pr = int(infos['prot'] * f)
+                st.session_state.d_gl = int(infos['gluc'] * f)
+                st.session_state.d_li = int(infos['lip'] * f)
+
+        d_ing = st.selectbox("Ingrédient", [""] + sorted(list(pantry.keys())), key="d_n", on_change=upd_direct)
+        d_pds = st.number_input("Poids (g)", 0, step=10, key="d_p", on_change=upd_direct)
+        
+        # Infos calculées
+        dk = st.number_input("Kcal", 0, key="d_k", disabled=True)
+        # On stocke les macros dans des variables invisibles ou juste affichées
+        if d_ing:
+            st.caption(f"Macros estimées : P:{st.session_state.get('d_pr',0)} | G:{st.session_state.get('d_gl',0)} | L:{st.session_state.get('d_li',0)}")
+        
+        if st.button("🍴 Manger cet ingrédient", type="primary", key="btn_eat_direct"):
+            if d_ing and d_pds > 0:
+                journal[today].append({
+                    "heure": datetime.now().strftime("%H:%M"), 
+                    "recette": f"🔹 {d_ing}", # On met un petit logo pour distinguer
+                    "poids": d_pds, 
+                    "kcal": dk, 
+                    "prot": st.session_state.get('d_pr',0), 
+                    "gluc": st.session_state.get('d_gl',0), 
+                    "lip": st.session_state.get('d_li',0)
+                })
+                save_data("journal", journal)
+                st.success(f"Miam ! {d_ing} ajouté.")
+                time.sleep(0.5)
+                st.rerun()
+        
+        st.info("💡 Astuce : Ajoute tes tartines élément par élément (Pain, puis Saumon, puis Avocat).")
+
+# --- 2. L'ORACLE ---
 with tabs[1]:
     st.header("🔮 L'Oracle")
-    if len(poids_data) < 2:
-        st.warning("Il me faut au moins 2 pesées à des dates différentes pour prédire l'avenir.")
+    if len(poids_data) < 2: st.warning("Il me faut au moins 2 pesées.")
     else:
-        # Calcul basique de tendance
         dates = sorted(poids_data.keys())
         p1, p2 = poids_data[dates[0]], poids_data[dates[-1]]
         d1 = datetime.strptime(dates[0], "%Y-%m-%d")
         d2 = datetime.strptime(dates[-1], "%Y-%m-%d")
         days = (d2 - d1).days
         if days > 0:
-            perte_totale = p1 - p2
-            vitesse = perte_totale / days # kg par jour
-            
+            vitesse = (p1 - p2) / days
             c1, c2 = st.columns(2)
-            c1.metric("Vitesse actuelle", f"{vitesse*7:.2f} kg/semaine")
-            
+            c1.metric("Vitesse", f"{vitesse*7:.2f} kg/semaine")
             if vitesse > 0:
-                obj_poids = c2.number_input("Objectif Poids (kg)", value=p2-5)
-                kg_restants = p2 - obj_poids
-                jours_restants = int(kg_restants / vitesse)
-                date_fin = d2 + timedelta(days=jours_restants)
-                st.success(f"🎉 Tu atteindras {obj_poids} kg le **{date_fin.strftime('%d/%m/%Y')}** (dans {jours_restants} jours) si tu continues comme ça.")
-            else:
-                st.error("Attention, la tendance est à la hausse ou stable.")
+                obj_poids = c2.number_input("Objectif", value=p2-5)
+                jours = int((p2 - obj_poids) / vitesse)
+                st.success(f"Objectif atteint dans {jours} jours !")
 
-# --- 3. COURSES (PDF) ---
+# --- 3. COURSES ---
 with tabs[2]:
     st.header("🛒 Courses")
     if st.button("Générer PDF"):
@@ -314,84 +328,57 @@ with tabs[2]:
             for m in planning[j]:
                 r = planning[j][m]["recette"]
                 if r in recettes:
-                    for i in recettes[r]["ingredients"]:
-                        sh[i["nom"]] = sh.get(i["nom"], 0) + i["poids"]
-        
+                    for i in recettes[r]["ingredients"]: sh[i["nom"]] = sh.get(i["nom"], 0) + i["poids"]
         sh_tri = {}
         for ing, poids in sh.items():
             r = detect_rayon(ing)
             if r not in sh_tri: sh_tri[r] = []
             sh_tri[r].append((ing, poids))
-            
         pdf_bytes = create_pdf(sh_tri)
-        st.download_button("⬇️ Télécharger la liste (PDF)", data=pdf_bytes, file_name="courses.pdf", mime='application/pdf')
-        
-        # Affichage écran
-        cols = st.columns(2)
-        idx=0
-        for ray, lst in sh_tri.items():
-            with cols[idx%2]:
-                st.subheader(ray)
-                for i, p in lst: st.write(f"- {i}: {p}g")
-            idx+=1
+        st.download_button("⬇️ PDF", data=pdf_bytes, file_name="courses.pdf", mime='application/pdf')
 
-# --- 4. GARDE MANGER (OPENFOODFACTS) ---
+# --- 4. GARDE MANGER ---
 with tabs[3]:
-    st.header("🥫 Ingrédients & IA")
-    
-    with st.expander("🔎 Rechercher un produit (OpenFoodFacts)", expanded=True):
-        query = st.text_input("Code barre ou nom (ex: Barilla)")
+    st.header("🥫 Ingrédients (IA)")
+    with st.expander("🔎 Rechercher (OpenFoodFacts)", expanded=True):
+        query = st.text_input("Recherche (ex: Avocat)")
         if query:
             res = search_openfoodfacts(query)
-            if not res: st.warning("Rien trouvé.")
             for r in res:
                 c1, c2, c3 = st.columns([3, 2, 1])
                 c1.write(f"**{r['nom']}**")
-                c1.caption(f"{r['kcal']} kcal | P:{r['prot']} G:{r['gluc']} L:{r['lip']}")
+                c1.caption(f"{r['kcal']} kcal")
                 if c3.button("Ajouter", key=f"off_{r['nom']}"):
                     pantry[r['nom']] = {"kcal": r['kcal'], "prot": r['prot'], "gluc": r['gluc'], "lip": r['lip']}
                     save_data("garde_manger", pantry)
-                    st.success("Ajouté !")
                     st.rerun()
 
     st.write("---")
-    st.subheader("Mes produits")
-    # Gestion de l'affichage avec macros éditables
-    search_gm = st.text_input("Filtrer mes produits")
+    search_gm = st.text_input("Filtrer")
     items = pantry.items()
     if search_gm: items = {k:v for k,v in pantry.items() if search_gm.lower() in k.lower()}.items()
-    
     for k, v in sorted(items):
-        # v est maintenant un dictionnaire {kcal, prot...} ou un int (si vieille version)
         vals = normalize_ingredient(v)
-        
         with st.expander(f"{k} ({vals['kcal']} kcal)"):
             c1, c2, c3, c4, c5 = st.columns(5)
-            nk = c1.number_input("Kcal", value=vals['kcal'], key=f"k_{k}")
-            np = c2.number_input("Prot", value=float(vals['prot']), key=f"p_{k}")
-            ng = c3.number_input("Gluc", value=float(vals['gluc']), key=f"g_{k}")
-            nl = c4.number_input("Lip", value=float(vals['lip']), key=f"l_{k}")
-            
-            if c5.button("Sauver", key=f"sv_{k}"):
+            nk = c1.number_input("K", value=vals['kcal'], key=f"k_{k}")
+            np = c2.number_input("P", value=float(vals['prot']), key=f"p_{k}")
+            ng = c3.number_input("G", value=float(vals['gluc']), key=f"g_{k}")
+            nl = c4.number_input("L", value=float(vals['lip']), key=f"l_{k}")
+            if c5.button("💾", key=f"sv_{k}"):
                 pantry[k] = {"kcal": nk, "prot": np, "gluc": ng, "lip": nl}
-                save_data("garde_manger", pantry)
-                st.rerun()
-            if c5.button("Suppr", key=f"dl_{k}"):
-                del pantry[k]
-                save_data("garde_manger", pantry)
-                st.rerun()
+                save_data("garde_manger", pantry); st.rerun()
+            if c5.button("🗑️", key=f"dl_{k}"): del pantry[k]; save_data("garde_manger", pantry); st.rerun()
 
-# --- 5. RECETTES (AVEC MACROS) ---
+# --- 5. RECETTES ---
 with tabs[4]:
     st.header("👨‍🍳 Recettes")
     ls = sorted(list(recettes.keys()))
-    
     cg, cd = st.columns([1, 2])
     with cg:
         md = st.radio("Mode", ["Nouvelle", "Modifier", "Dupliquer", "Supprimer"], key="rm")
         tg = None if md=="Nouvelle" else st.selectbox("Recette", ls, key="rt")
-        if md=="Supprimer" and st.button("Confirmer"):
-            del recettes[tg]; save_data("recettes", recettes); st.rerun()
+        if md=="Supprimer" and st.button("Confirmer"): del recettes[tg]; save_data("recettes", recettes); st.rerun()
 
     with cd:
         if md != "Supprimer":
@@ -403,58 +390,27 @@ with tabs[4]:
             dn = tg if md == "Modifier" and tg else f"{tg} (Copie)" if md=="Dupliquer" and tg else ""
             rn = st.text_input("Nom", value=dn, disabled=(md=="Modifier"), key="rn")
             
-            # Update auto
             def upd():
                 i, w = st.session_state.ra_n, st.session_state.ra_p
                 if i and i in pantry:
                     infos = normalize_ingredient(pantry[i])
-                    factor = w / 100
-                    st.session_state.ra_k = int(infos['kcal'] * factor)
-                    st.session_state.ra_pr = infos['prot'] * factor
-                    st.session_state.ra_gl = infos['gluc'] * factor
-                    st.session_state.ra_li = infos['lip'] * factor
+                    f = w / 100
+                    st.session_state.ra_k = int(infos['kcal'] * f)
 
             c1, c2, c3, c4 = st.columns([3, 2, 2, 1])
-            ni = c1.selectbox("Ingrédient", [""] + sorted(list(pantry.keys())), key="ra_n", on_change=upd)
-            np = c2.number_input("Poids (g)", 0, step=10, key="ra_p", on_change=upd)
-            nk = c3.number_input("Kcal", 0, key="ra_k")
-            
-            # Champs cachés pour macros (calculés mais modifiables si on veut afficher)
-            # On stocke juste dans le bouton ajout
-            
+            ni = c1.selectbox("Ajout", [""] + sorted(list(pantry.keys())), key="ra_n", on_change=upd)
+            np = c2.number_input("g", 0, step=10, key="ra_p", on_change=upd)
+            nk = c3.number_input("kcal", 0, key="ra_k")
             if c4.button("➕") and ni:
-                # Recup macros courantes
                 infos = normalize_ingredient(pantry[ni])
-                factor = np / 100
-                st.session_state.ti.append({
-                    "nom": ni, "poids": np, "cal": nk,
-                    "prot": infos['prot']*factor, "gluc": infos['gluc']*factor, "lip": infos['lip']*factor
-                })
+                f = np / 100
+                st.session_state.ti.append({"nom": ni, "poids": np, "cal": nk, "prot": infos['prot']*f, "gluc": infos['gluc']*f, "lip": infos['lip']*f})
             
-            st.write("---")
-            tot_k, tot_p, tot_g, tot_l = 0,0,0,0
-            rdl = -1
-            for i, x in enumerate(st.session_state.ti):
-                c1, c2, c3, c4 = st.columns([3, 1, 2, 1])
-                c1.text(x['nom'])
-                c2.text(f"{x['poids']}g")
-                # Gestion compatibilité vieux ingrédients sans macros
-                xp, xg, xl = x.get('prot',0), x.get('gluc',0), x.get('lip',0)
-                c3.caption(f"{x['cal']}k | P:{int(xp)} G:{int(xg)} L:{int(xl)}")
-                tot_k+=x['cal']; tot_p+=xp; tot_g+=xg; tot_l+=xl
-                if c4.button("🗑️", key=f"d{i}"): rdl=i
-            
-            if rdl>=0: st.session_state.ti.pop(rdl); st.rerun()
-            
-            st.info(f"Total: {tot_k} kcal | P: {int(tot_p)}g | G: {int(tot_g)}g | L: {int(tot_l)}g")
-            
-            if st.button("💾 Sauver", type="primary") and rn:
-                recettes[rn] = {
-                    "total_cal": tot_k, "total_prot": tot_p, "total_gluc": tot_g, "total_lip": tot_l,
-                    "ingredients": st.session_state.ti
-                }
-                save_data("recettes", recettes)
-                st.success("Sauvé"); st.session_state.ti=[]; st.rerun()
+            tot_k=sum([x['cal'] for x in st.session_state.ti])
+            st.table(pd.DataFrame(st.session_state.ti)[['nom', 'poids', 'cal']])
+            if st.button("💾 Sauver") and rn:
+                recettes[rn] = {"total_cal": tot_k, "total_prot": sum([x['prot'] for x in st.session_state.ti]), "ingredients": st.session_state.ti}
+                save_data("recettes", recettes); st.rerun()
 
 # --- 6. PLANNING ---
 with tabs[5]:
@@ -468,7 +424,7 @@ with tabs[5]:
                 for i, m in enumerate(MOMENTS):
                     curr = planning[j].get(m, {})
                     idx = lr.index(curr.get("recette", "(Rien)")) if curr.get("recette") in lr else 0
-                    nr = cs[i].selectbox(m, lr, index=idx, key=f"p_{j}_{m}", label_visibility="collapsed")
+                    nr = cs[i].selectbox(m, lr, index=idx, key=f"p_{j}_{m}")
                     nc = 0
                     if nr != "(Rien)": nc = cs[i].number_input("k", value=curr.get("cible", 600), step=50, key=f"pc_{j}_{m}")
                     st.session_state[f"st_{j}_{m}"] = {"recette": nr, "cible": nc}
@@ -480,18 +436,15 @@ with tabs[5]:
                     if st.session_state[f"st_{j}_{m}"]["recette"] != "(Rien)": np[j][m] = st.session_state[f"st_{j}_{m}"]
             save_data("planning", np); st.rerun()
 
-# --- 7. POIDS ---
+# --- 7. POIDS & PLATS ---
 with tabs[6]:
-    w = st.number_input("Kg", 0.0, 200.0, step=0.1, format="%.1f", key="wp")
-    if st.button("Sauver", key="ws") and w>0: poids_data[today]=w; save_data("poids", poids_data); st.rerun()
-    if poids_data:
-        dts = sorted(poids_data.keys())
-        st.line_chart(pd.DataFrame({"Date": dts, "Poids": [poids_data[d] for d in dts]}).set_index("Date"))
+    w = st.number_input("Kg", 0.0, key="wp")
+    if st.button("S") and w>0: poids_data[today]=w; save_data("poids", poids_data); st.rerun()
+    if poids_data: st.line_chart(pd.DataFrame({"Date": sorted(poids_data.keys()), "Poids": [poids_data[d] for d in sorted(poids_data.keys())]}).set_index("Date"))
 
-# --- 8. PLATS ---
 with tabs[7]:
-    pn = st.text_input("Nom", key="pn"); pw = st.number_input("Poids", 0, key="pw")
-    if st.button("Ajouter", key="pa") and pn: plats_vides[pn]=pw; save_data("plats", plats_vides); st.rerun()
+    pn = st.text_input("Nom"); pw = st.number_input("Poids", 0)
+    if st.button("Ajouter") and pn: plats_vides[pn]=pw; save_data("plats", plats_vides); st.rerun()
     for k,v in plats_vides.items():
-        c1, c2, c3 = st.columns([3, 2, 1]); c1.text(k); c2.text(v)
-        if c3.button("X", key=f"pd_{k}"): del plats_vides[k]; save_data("plats", plats_vides); st.rerun()
+        st.write(f"{k}: {v}"); 
+        if st.button("X", key=f"pd_{k}"): del plats_vides[k]; save_data("plats", plats_vides); st.rerun()
