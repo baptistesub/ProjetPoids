@@ -142,7 +142,7 @@ def get_today_str(): return datetime.now().strftime("%Y-%m-%d")
 # ==============================================================================
 # INTERFACE
 # ==============================================================================
-st.set_page_config(page_title="Le Portionneur V16", page_icon="🥪", layout="wide")
+st.set_page_config(page_title="Le Portionneur V16.1", page_icon="🥪", layout="wide")
 st.title("🥪 Le Portionneur : Mode Assemblage")
 
 init_state()
@@ -407,7 +407,15 @@ with tabs[4]:
                 st.session_state.ti.append({"nom": ni, "poids": np, "cal": nk, "prot": infos['prot']*f, "gluc": infos['gluc']*f, "lip": infos['lip']*f})
             
             tot_k=sum([x['cal'] for x in st.session_state.ti])
-            st.table(pd.DataFrame(st.session_state.ti)[['nom', 'poids', 'cal']])
+            
+            # --- CORRECTION DU BUG ICI ---
+            # On vérifie si la liste est vide avant d'afficher le tableau
+            if st.session_state.ti:
+                st.table(pd.DataFrame(st.session_state.ti)[['nom', 'poids', 'cal']])
+            else:
+                st.info("Aucun ingrédient pour l'instant.")
+            # -----------------------------
+            
             if st.button("💾 Sauver") and rn:
                 recettes[rn] = {"total_cal": tot_k, "total_prot": sum([x['prot'] for x in st.session_state.ti]), "ingredients": st.session_state.ti}
                 save_data("recettes", recettes); st.rerun()
