@@ -28,11 +28,9 @@ TABS_MAPPING = {
 }
 
 # ==============================================================================
-# 2. GESTION INTELLIGENTE DES DONNÉES (CACHE LOCAL)
+# 2. GESTION DONNÉES
 # ==============================================================================
-
 def fetch_from_cloud(key):
-    """Lit les données depuis Google Sheets (Attention aux quotas !)"""
     try:
         client = get_gspread_client()
         sh = client.open("ProjetPoids_DB")
@@ -44,7 +42,6 @@ def fetch_from_cloud(key):
         return {}
 
 def push_to_cloud(key, data):
-    """Envoie les données vers Google Sheets"""
     try:
         client = get_gspread_client()
         sh = client.open("ProjetPoids_DB")
@@ -52,50 +49,41 @@ def push_to_cloud(key, data):
         json_str = json.dumps(data, ensure_ascii=False)
         worksheet.update_acell('A1', json_str)
     except Exception as e:
-        st.error(f"Erreur sauvegarde cloud: {e}")
+        st.error(f"Erreur cloud: {e}")
 
-def init_state():
-    """Charge tout au démarrage UNE SEULE FOIS"""
-    keys = ["recettes", "plats", "planning", "journal", "poids", "garde_manger"]
-    
-    # On vérifie si c'est déjà chargé pour ne pas rappeler Google
-    if "data_loaded" not in st.session_state:
-        with st.spinner('Chargement des données...'):
-            for k in keys:
-                st.session_state[k] = fetch_from_cloud(k)
-                time.sleep(0.2) # Petite pause pour être gentil avec Google
-            
-            # Init Garde Manger par défaut si vide
-            if not st.session_state["garde_manger"]:
-                st.session_state["garde_manger"] = DEFAULTS_PANTRY.copy()
-                push_to_cloud("garde_manger", st.session_state["garde_manger"])
-                
-            st.session_state["data_loaded"] = True
-
-def save_data(key, new_data):
-    """Met à jour le cache local ET le cloud"""
-    st.session_state[key] = new_data # Mise à jour immédiate (rapide)
-    push_to_cloud(key, new_data) # Mise à jour cloud (lente)
-
-# Données par défaut
 DEFAULTS_PANTRY = {
     "Pâtes / Riz (Cru)": 360, "Pâtes / Riz (Cuit)": 130, "Pomme de terre": 80, 
     "Légumes": 40, "Pain": 260, "Boeuf 5%": 125, "Poulet": 110, "Oeuf": 70,
     "Crème 15%": 160, "Huile": 900, "Fromage râpé": 380, "Yaourt": 50, "Banane": 89
 }
 
+def init_state():
+    keys = ["recettes", "plats", "planning", "journal", "poids", "garde_manger"]
+    if "data_loaded" not in st.session_state:
+        with st.spinner('Chargement...'):
+            for k in keys:
+                st.session_state[k] = fetch_from_cloud(k)
+                time.sleep(0.2)
+            if not st.session_state["garde_manger"]:
+                st.session_state["garde_manger"] = DEFAULTS_PANTRY.copy()
+                push_to_cloud("garde_manger", st.session_state["garde_manger"])
+            st.session_state["data_loaded"] = True
+
+def save_data(key, new_data):
+    st.session_state[key] = new_data
+    push_to_cloud(key, new_data)
+
 def get_today_str(): return datetime.now().strftime("%Y-%m-%d")
 
 # ==============================================================================
 # 3. INTERFACE
 # ==============================================================================
-st.set_page_config(page_title="Le Portionneur V12", page_icon="⚡", layout="wide")
-st.title("⚡ Le Portionneur : Rapide")
+st.set_page_config(page_title="Le Portionneur V13", page_icon="⚡", layout="wide")
+st.title("⚡ Le Portionneur : Auto-Calibré")
 
-# Initialisation unique
 init_state()
 
-# Raccourcis vers le state (pour faciliter le code)
+# Raccourcis
 recettes = st.session_state["recettes"]
 plats_vides = st.session_state["plats"]
 planning = st.session_state["planning"]
@@ -106,9 +94,7 @@ pantry = st.session_state["garde_manger"]
 MOMENTS = ["Matin", "Midi", "Collation", "Soir"]
 JOURS = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
 
-# --- BOUTON DE RECHARGEMENT ---
-# Utile si tu modifies les données sur un autre appareil et que tu veux forcer la mise à jour
-if st.sidebar.button("🔄 Forcer la synchro Cloud"):
+if st.sidebar.button("🔄 Synchro"):
     for k in ["data_loaded", "recettes", "plats", "planning", "journal", "poids", "garde_manger"]:
         if k in st.session_state: del st.session_state[k]
     st.rerun()
@@ -137,7 +123,6 @@ with tabs[0]:
     with col_main:
         if not recettes: st.warning("Crée des recettes !")
         else:
-            # Auto-detect (UTC+1 rough fix)
             now = datetime.now() + timedelta(hours=1)
             jour = JOURS[now.weekday()]
             h = now.hour
@@ -237,7 +222,7 @@ with tabs[4]:
             save_data("planning", np)
             st.rerun()
 
-# --- 6. RECETTES ---
+# --- 6. RECETTES (AUTO-CALCUL CORRIGÉ) ---
 with tabs[5]:
     sr = st.text_input("🔍", key="rs")
     ls = sorted(list(recettes.keys()))
@@ -265,11 +250,26 @@ with tabs[5]:
             dn = tg if md == "Modifier" and tg else f"{tg} (Copie)" if md=="Dupliquer" and tg else ""
             rn = st.text_input("Nom", value=dn, disabled=(md=="Modifier"), key="rn")
             
+            # --- FONCTION DE MISE A JOUR DES CALORIES ---
+            def update_cal():
+                # On récupère les valeurs actuelles via le State
+                i = st.session_state.ra_n
+                w = st.session_state.ra_p
+                # On calcule et on met à jour la case Kcal directement
+                if i and i in pantry:
+                    st.session_state.ra_k = int((w * pantry[i]) / 100)
+                else:
+                    st.session_state.ra_k = 0
+
             st.markdown("##### Ingrédients")
             ca, cb, cc, cd = st.columns([3, 2, 2, 1])
-            ni = ca.selectbox("Ajout", [""] + sorted(list(pantry.keys())), key="ra_n")
-            np = cb.number_input("g", 0, step=10, key="ra_p")
-            nc = cc.number_input("kcal", value=int((np*pantry[ni])/100) if ni and ni in pantry else 0, key="ra_k")
+            
+            # Note : on ajoute on_change pour déclencher le calcul
+            ni = ca.selectbox("Ajout", [""] + sorted(list(pantry.keys())), key="ra_n", on_change=update_cal)
+            np = cb.number_input("g", 0, step=10, key="ra_p", on_change=update_cal)
+            # Note : plus besoin de value=... ici, c'est le state qui gère
+            nc = cc.number_input("kcal", 0, key="ra_k") 
+            
             if cd.button("➕", key="ra_b") and ni: st.session_state.ti.append({"nom": ni, "poids": np, "cal": nc})
             
             st.write("---")
