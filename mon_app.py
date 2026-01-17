@@ -6,8 +6,6 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import time
 import requests
-from fpdf import FPDF
-import io
 
 # ==============================================================================
 # CONFIG & CONNEXION
@@ -50,21 +48,6 @@ def search_openfoodfacts(query):
         return results
     except:
         return []
-
-def create_pdf(courses_dict):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", size=12)
-    pdf.cell(200, 10, txt="Ma Liste de Courses", ln=1, align='C')
-    pdf.ln(10)
-    for rayon, items in courses_dict.items():
-        pdf.set_font("Arial", 'B', 12)
-        pdf.cell(0, 10, rayon, ln=1)
-        pdf.set_font("Arial", size=11)
-        for ing, poids in items:
-            pdf.cell(0, 8, f" - {ing}: {poids}g", ln=1)
-        pdf.ln(5)
-    return pdf.output(dest='S').encode('latin-1', 'ignore')
 
 # --- LOGIQUE RAYONS ---
 RAYONS = {
@@ -133,7 +116,6 @@ def init_state():
                 push_to_cloud("garde_manger", st.session_state["garde_manger"])
             st.session_state["data_loaded"] = True
     
-    # Initialisation du Plateau Repas temporaire (V17)
     if "basket" not in st.session_state:
         st.session_state.basket = []
 
@@ -146,8 +128,8 @@ def get_today_str(): return datetime.now().strftime("%Y-%m-%d")
 # ==============================================================================
 # INTERFACE
 # ==============================================================================
-st.set_page_config(page_title="Le Portionneur V17", page_icon="🏗️", layout="wide")
-st.title("🏗️ Le Portionneur : Plateau Repas")
+st.set_page_config(page_title="Le Portionneur V18", page_icon="🥝", layout="wide")
+st.title("🥝 Le Portionneur : V18")
 
 init_state()
 
@@ -182,9 +164,8 @@ with st.sidebar:
 
 tabs = st.tabs(["🏠 Cockpit", "🔮 Oracle", "🛒 Courses", "🥫 Garde-Manger (IA)", "👨‍🍳 Recettes", "📅 Planning", "⚖️ Poids", "🧽 Plats"])
 
-# --- 1. COCKPIT (AVEC PLATEAU REPAS) ---
+# --- 1. COCKPIT ---
 with tabs[0]:
-    # Totaux Jour
     today = get_today_str()
     if today not in journal: journal[today] = []
     tot_k = sum([e['kcal'] for e in journal[today]])
@@ -203,8 +184,6 @@ with tabs[0]:
     # --- MODE 1 : RECETTES ---
     with col_recette:
         st.subheader("🍲 Plat Cuisiné")
-        st.caption("Recette mélangeant plusieurs ingrédients")
-        
         if not recettes: st.warning("Crée des recettes !")
         else:
             now = datetime.now() + timedelta(hours=1)
@@ -254,49 +233,44 @@ with tabs[0]:
     with col_separateur:
         st.markdown("<div style='border-left:1px solid #333; height:500px'></div>", unsafe_allow_html=True)
 
-    # --- MODE 2 : PLATEAU REPAS (ASSEMBLAGE) ---
+    # --- MODE 2 : PLATEAU (CALLBACK FIX) ---
     with col_assemblage:
         st.subheader("🥪 Assemblage / Plateau")
-        st.caption("Construis ton repas ingrédient par ingrédient")
 
-        # 1. Selecteur et Ajout au Panier
-        def upd_direct():
-            i, w = st.session_state.d_n, st.session_state.d_p
-            if i and i in pantry:
+        # Fonction de rappel pour éviter l'erreur "session_state"
+        def add_to_tray_callback():
+            i = st.session_state.d_n
+            w = st.session_state.d_p
+            if i and i in pantry and w > 0:
                 infos = normalize_ingredient(pantry[i])
                 f = w / 100
-                st.session_state.d_k = int(infos['kcal'] * f)
-
-        c_add1, c_add2 = st.columns([2, 1])
-        d_ing = c_add1.selectbox("Ingrédient", [""] + sorted(list(pantry.keys())), key="d_n", on_change=upd_direct)
-        d_pds = c_add2.number_input("Poids (g)", 0, step=10, key="d_p", on_change=upd_direct)
-        
-        # Bouton Ajouter au plateau
-        if st.button("⬇️ Poser sur le plateau", key="btn_add_bsk"):
-            if d_ing and d_pds > 0:
-                infos = normalize_ingredient(pantry[d_ing])
-                f = d_pds / 100
                 st.session_state.basket.append({
-                    "nom": d_ing,
-                    "poids": d_pds,
+                    "nom": i,
+                    "poids": w,
                     "kcal": int(infos['kcal'] * f),
                     "prot": int(infos['prot'] * f),
                     "gluc": int(infos['gluc'] * f),
                     "lip": int(infos['lip'] * f)
                 })
-                # Reset inputs (via rerun ou juste state clean)
+                # Reset propre des champs
                 st.session_state.d_n = ""
                 st.session_state.d_p = 0
-                st.rerun()
+        
+        # Selecteur (avec calcul rapide visuel seulement)
+        c_add1, c_add2 = st.columns([2, 1])
+        d_ing = c_add1.selectbox("Ingrédient", [""] + sorted(list(pantry.keys())), key="d_n")
+        d_pds = c_add2.number_input("Poids (g)", 0, step=10, key="d_p")
+        
+        # Bouton avec Callback
+        st.button("⬇️ Poser sur le plateau", on_click=add_to_tray_callback)
 
-        # 2. Visualisation du Plateau
+        # Affichage du Plateau
         st.write("---")
         st.markdown("#### 🍽️ Ton Plateau")
         
         bsk_tot_k = sum([x['kcal'] for x in st.session_state.basket])
         bsk_tot_p = sum([x['prot'] for x in st.session_state.basket])
         
-        # Liste des items du panier
         if not st.session_state.basket:
             st.info("Plateau vide.")
         else:
@@ -310,37 +284,27 @@ with tabs[0]:
                     st.rerun()
             
             st.write("---")
-            # CIBLE DU PLATEAU
-            target_repas = st.number_input("🎯 Objectif pour ce repas (kcal)", value=600, step=50)
+            target_repas = st.number_input("🎯 Objectif repas (kcal)", value=600, step=50)
             
-            # Indicateur visuel
             delta = bsk_tot_k - target_repas
-            msg_delta = f"⚠️ Trop (+{delta})" if delta > 0 else f"✅ Marge (-{abs(delta)})"
             col_res1, col_res2 = st.columns(2)
-            col_res1.metric("Total Plateau", f"{bsk_tot_k} kcal", delta=f"{delta} vs Objectif", delta_color="inverse")
+            col_res1.metric("Total Plateau", f"{bsk_tot_k} kcal", delta=f"{delta} vs Obj", delta_color="inverse")
             col_res2.metric("Protéines", f"{bsk_tot_p} g")
             
-            # 3. Validation Finale
-            if st.button("🍴 Tout Manger (Valider)", type="primary", use_container_width=True):
+            if st.button("🍴 Tout Manger", type="primary", use_container_width=True):
                 now_h = datetime.now().strftime("%H:%M")
                 for item in st.session_state.basket:
                     journal[today].append({
-                        "heure": now_h,
-                        "recette": f"🔹 {item['nom']}",
-                        "poids": item['poids'],
-                        "kcal": item['kcal'],
-                        "prot": item['prot'],
-                        "gluc": item['gluc'],
-                        "lip": item['lip']
+                        "heure": now_h, "recette": f"🔹 {item['nom']}", "poids": item['poids'],
+                        "kcal": item['kcal'], "prot": item['prot'], "gluc": item['gluc'], "lip": item['lip']
                     })
                 save_data("journal", journal)
-                st.session_state.basket = [] # Vider le panier
-                st.success("Repas validé !")
+                st.session_state.basket = []
+                st.success("Validé !")
                 time.sleep(1)
                 st.rerun()
 
-
-# --- 2. L'ORACLE ---
+# --- 2. ORACLE ---
 with tabs[1]:
     st.header("🔮 L'Oracle")
     if len(poids_data) < 2: st.warning("Il me faut au moins 2 pesées.")
@@ -357,29 +321,36 @@ with tabs[1]:
                 jours = int((p2 - obj_poids) / vitesse)
                 st.success(f"Objectif atteint dans {jours} jours !")
 
-# --- 3. COURSES ---
+# --- 3. COURSES (SANS PDF) ---
 with tabs[2]:
     st.header("🛒 Courses")
-    if st.button("Générer PDF"):
+    if st.button("Générer la Liste"):
         sh = {}
         for j in planning:
             for m in planning[j]:
                 r = planning[j][m]["recette"]
                 if r in recettes:
                     for i in recettes[r]["ingredients"]: sh[i["nom"]] = sh.get(i["nom"], 0) + i["poids"]
+        
         sh_tri = {}
         for ing, poids in sh.items():
             r = detect_rayon(ing)
             if r not in sh_tri: sh_tri[r] = []
             sh_tri[r].append((ing, poids))
-        pdf_bytes = create_pdf(sh_tri)
-        st.download_button("⬇️ PDF", data=pdf_bytes, file_name="courses.pdf", mime='application/pdf')
+        
+        cols = st.columns(2)
+        idx=0
+        for ray, lst in sh_tri.items():
+            with cols[idx%2]:
+                st.subheader(ray)
+                for i, p in lst: st.write(f"- {i}: {p}g")
+            idx+=1
 
 # --- 4. GARDE MANGER ---
 with tabs[3]:
     st.header("🥫 Ingrédients (IA)")
     with st.expander("🔎 Rechercher (OpenFoodFacts)", expanded=True):
-        query = st.text_input("Recherche (ex: Avocat)")
+        query = st.text_input("Recherche")
         if query:
             res = search_openfoodfacts(query)
             for r in res:
@@ -388,8 +359,7 @@ with tabs[3]:
                 c1.caption(f"{r['kcal']} kcal")
                 if c3.button("Ajouter", key=f"off_{r['nom']}"):
                     pantry[r['nom']] = {"kcal": r['kcal'], "prot": r['prot'], "gluc": r['gluc'], "lip": r['lip']}
-                    save_data("garde_manger", pantry)
-                    st.rerun()
+                    save_data("garde_manger", pantry); st.rerun()
 
     st.write("---")
     search_gm = st.text_input("Filtrer")
@@ -444,7 +414,6 @@ with tabs[4]:
                 f = np / 100
                 st.session_state.ti.append({"nom": ni, "poids": np, "cal": nk, "prot": infos['prot']*f, "gluc": infos['gluc']*f, "lip": infos['lip']*f})
             
-            # TABLEAU SECURISE
             if st.session_state.ti:
                 st.table(pd.DataFrame(st.session_state.ti)[['nom', 'poids', 'cal']])
             else:
