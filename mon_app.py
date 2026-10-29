@@ -235,6 +235,11 @@ def rounded(value, digits=0):
     return number(value, "Valeur").quantize(Decimal(1).scaleb(-digits), rounding=ROUND_HALF_UP)
 
 
+def readable_amount(value):
+    text = f"{rounded(value, 1):f}"
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
 def calculate_portion(total_kcal, cooked_weight, target_kcal, tare=0):
     total = number(total_kcal, "Calories du plat", positive=True)
     gross = number(cooked_weight, "Poids cuit", positive=True)
@@ -687,9 +692,9 @@ def ingredients(data):
 
 def day_table(entries):
     return [{"Repas": item.get("repas", "Autre"), "Aliment / recette": item.get("nom", item.get("recette", "Repas")),
-             "Poids (g)": item.get("poids", "—"), "kcal": float(rounded(item["kcal"], 1)),
+             "Poids (g)": "—" if item.get("poids") is None else readable_amount(item["poids"]), "kcal": readable_amount(item["kcal"]),
              **{label + " (g)": "À compléter" if item.get(key) is None or legacy_unknown_macros(item)
-                else float(rounded(item[key], 1)) for key, label in NUTRIENTS.items()}}
+                else readable_amount(item[key]) for key, label in NUTRIENTS.items()}}
             for item in entries if not item.get("annule") and not item.get("retire")]
 
 
@@ -741,14 +746,14 @@ def day_dashboard(data):
         st.info("Un nutriment manque pour au moins un aliment mangé : son total et son reste ne peuvent pas être calculés de façon fiable. Ce n’est pas un zéro.")
     st.caption("Seuls les repas marqués comme mangés sont décomptés. Un dépassement ne modifie pas automatiquement les autres repas et n’est pas une consigne de sauter un repas.")
 
-    with st.expander("Journée type : une organisation souple", expanded=not live_plans):
+    with st.expander("Journée type : une organisation souple"):
         ideas = {"Petit déjeuner": "Ex. produit laitier ou alternative + fruit + pain ou céréales",
                  "Déjeuner": "Ex. source de protéines + féculent + légumes + matière grasse",
                  "Dîner": "Ex. source de protéines + féculent selon le repas + légumes",
                  "Collation": "Facultative : selon la faim et le reste de la journée"}
-        st.table([{"Repas": meal, "Exemple d’organisation": ideas[meal], "Repère kcal": float(goal["kcal"]),
-                   "Protéines (g)": float(goal["prot"]), "Glucides (g)": float(goal["gluc"]),
-                   "Lipides (g)": float(goal["lip"])} for meal, goal in allocations.items()])
+        st.table([{"Repas": meal, "Exemple d’organisation": ideas[meal], "Repère kcal": readable_amount(goal["kcal"]),
+                   "Protéines (g)": readable_amount(goal["prot"]), "Glucides (g)": readable_amount(goal["gluc"]),
+                   "Lipides (g)": readable_amount(goal["lip"])} for meal, goal in allocations.items()])
         st.caption("La répartition par repas est indicative : l’ensemble de la journée compte. Sans collation, les repères sont redistribués sur les trois repas ; les repas déjà prévus restent inchangés.")
         if data["recettes"]:
             with st.form("make_day_type"):
