@@ -33,7 +33,7 @@ L’application n’appelle aucun moteur d’IA ni base alimentaire externe. Les
 python -m unittest discover -s . -p 'test_*.py' -v
 ```
 
-60 tests couvrent notamment les deux régressions observées sur la V18 (cible négative et portion dépassant le plat), les valeurs nulles/non finies, la tare, l’arrondi, les virgules décimales dans les fonctions de calcul, la création puis réutilisation d’une recette, les doublons, les changements de formulaire et les sauvegardes échouées. Le test de propriétés exécute 2 000 calculs déterministes supplémentaires.
+62 tests couvrent notamment les deux régressions observées sur la V18 (cible négative et portion dépassant le plat), les valeurs nulles/non finies, la tare, l’arrondi, les virgules décimales dans les fonctions de calcul, la création puis réutilisation d’une recette, les doublons, les changements de formulaire et les sauvegardes échouées. Le test de propriétés exécute 2 000 calculs déterministes supplémentaires.
 
 Les tests Streamlit utilisent une session locale et les tests de sauvegarde simulent Google Sheets. Les parcours de planning, consommation et annulation ont également été vérifiés dans Chrome sur le déploiement Streamlit. La prévisualisation locale dans Chrome avait été bloquée par les restrictions réseau de l’environnement de travail.
 
@@ -79,3 +79,9 @@ En automatique, les pourcentages de départ sont 20 % protéines, 35 % lipides, 
 L’aperçu n’est appliqué qu’après Enregistrer mes repères. L’enregistrement actualise les objectifs et les répartitions indicatives des nouveaux repas ; les quantités et valeurs des repas déjà prévus ou mangés restent intactes. Le mode et les pourcentages sont conservés dans les sauvegardes. Atteindre ces macros ne garantit pas tous les apports en micronutriments.
 
 Validation : 60 tests passent, dont quatre nouveaux tests sur la conservation de l’énergie, la formule de Black, le choix manuel/automatique, l’aperçu avant enregistrement et l’application d’une estimation sans conservation du profil. Les anciens tests d’interface ciblent désormais les libellés, indépendamment de l’ordre des boutons de choix.
+
+### Protéines selon le poids et estimation par repas
+
+Le mode automatique permet aussi de choisir des protéines en g/kg de poids de corps, avec un ratio initial de 2 g/kg/j ajustable. Ce réglage répond au choix de l’utilisateur, pas à une recommandation universelle. Le poids de référence et le ratio sont enregistrés avec les objectifs. À poids inchangé, modifier les calories conserve la quantité de protéines ; les lipides suivent leur pourcentage énergétique et les glucides complètent le reste. Un objectif ne laissant plus de calories pour les glucides bloque l’enregistrement automatique.
+
+Les repères par repas sont désormais affichés directement dans Ma journée : 25 % petit déjeuner, 35 % déjeuner, 30 % dîner et 10 % collation. Sans collation, les trois parts sont renormalisées pour conserver les totaux. Il s’agit d’une organisation souple, pas d’une obligation de respecter les macros à chaque repas. Les repas précédemment saisis restent inchangés. Deux nouveaux tests vérifient le calcul par kilo, sa sauvegarde, l’ajustement des glucides et la répartition des protéines ; 62 tests passent au total.
