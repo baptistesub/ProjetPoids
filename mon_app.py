@@ -96,6 +96,14 @@ def resize_row(row, weight):
     return result
 
 
+def edit_recipe_quantity():
+    try:
+        index = st.session_state.row_to_edit
+        st.session_state._rows[index] = resize_row(st.session_state._rows[index], st.session_state.new_row_weight)
+    except (ValueError, IndexError) as error:
+        st.session_state._recipe_error = str(error)
+
+
 def number(value, label, *, positive=False):
     """Valider aussi les données importées, pas seulement les widgets."""
     if isinstance(value, bool):
@@ -369,6 +377,8 @@ def recipes(data):
         st.session_state._rows = copy.deepcopy(data["recettes"].get(choice, {}).get("ingredients", []))
         st.session_state.recipe_name = "" if choice == "Nouvelle recette" else choice
     name = st.text_input("Nom de la recette", key="recipe_name")
+    if st.session_state.get("_recipe_error"):
+        st.error(st.session_state.pop("_recipe_error"))
     library = data.get("garde_manger", {})
     if library:
         st.markdown("#### Ajout rapide : ingrédient + grammes")
@@ -406,15 +416,10 @@ def recipes(data):
         st.table([{"Ingrédient": row["nom"], "Quantité (g)": row["poids"],
                    "Calories (kcal)": float(rounded(row["cal"], 2))} for row in rows])
         remove = st.selectbox("Ingrédient à retirer", range(len(rows)),
-                              format_func=lambda i: f"{i + 1} · {rows[i]['nom']}")
+                              format_func=lambda i: f"{i + 1} · {rows[i]['nom']}", key="row_to_edit")
         with st.form("change_weight"):
-            new_weight = st.number_input("Nouvelle quantité (g)", min_value=0.0, value=100.0, step=1.0)
-            if st.form_submit_button("Modifier la quantité sélectionnée"):
-                try:
-                    rows[remove] = resize_row(rows[remove], new_weight)
-                    st.rerun()
-                except ValueError as error:
-                    st.error(str(error))
+            st.number_input("Nouvelle quantité (g)", min_value=0.0, value=100.0, step=1.0, key="new_row_weight")
+            st.form_submit_button("Modifier la quantité sélectionnée", on_click=edit_recipe_quantity)
         if st.button("Retirer cet ingrédient"):
             rows.pop(remove)
             st.rerun()
