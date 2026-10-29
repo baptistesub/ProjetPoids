@@ -113,6 +113,61 @@ class State(dict):
     __setattr__ = dict.__setitem__
 
 
+class NutritionAndSpeed(unittest.TestCase):
+    FOOD = {"kcal": 360, "prot": 7, "gluc": 78, "lip": 1, "fibres": 2}
+
+    def test_nutrients_scaled_without_early_rounding(self):
+        row = app.row_from_food("Riz cru", 150, self.FOOD)
+        self.assertEqual(row["cal"], 540)
+        self.assertEqual(row["prot"], 10.5)
+        self.assertEqual(row["gluc"], 117)
+        self.assertEqual(row["fibres"], 3)
+
+    def test_missing_is_not_zero(self):
+        row = app.row_from_food("Ancien", 100, 200)
+        self.assertNotIn("prot", row)
+        self.assertIsNone(app.nutrient_totals({"ingredients": [row]})["prot"])
+        zero = app.row_from_food("Connu", 100, {"kcal": 0, "prot": 0})
+        self.assertEqual(app.nutrient_totals({"ingredients": [zero]})["prot"], 0)
+
+    def test_partial_macros_not_reported_as_complete(self):
+        rows = [app.row_from_food("a", 100, self.FOOD), app.ingredient_row("b", 10, 100, "pour 100 g")]
+        self.assertIsNone(app.nutrient_totals({"ingredients": rows})["gluc"])
+
+    def test_quantity_edit_scales_all_values(self):
+        before = app.row_from_food("a", 200, self.FOOD)
+        after = app.resize_row(before, 50)
+        self.assertEqual(after["cal"], 180)
+        self.assertEqual(after["prot"], 3.5)
+        self.assertEqual(before["poids"], 200)
+
+    def test_batch_grammes_and_semicolon_decimal(self):
+        rows, errors = app.parse_ingredient_list("150,5 g Riz CRU\nRiz cru;50", {"Riz cru": self.FOOD})
+        self.assertFalse(errors)
+        self.assertEqual([r["poids"] for r in rows], [150.5, 50])
+
+    def test_batch_is_atomic_and_no_guesses(self):
+        rows, errors = app.parse_ingredient_list("100 g Riz cru\n100 g Poulet inconnu", {"Riz cru": self.FOOD})
+        self.assertFalse(rows)
+        self.assertEqual(len(errors), 1)
+
+    def test_ambiguous_names_and_zero_weight(self):
+        for text, library in [("100 g Pate", {"Pâte": self.FOOD, "Pate": self.FOOD}),
+                              ("0 g Riz", {"Riz": self.FOOD}), ("", {})]:
+            rows, errors = app.parse_ingredient_list(text, library)
+            self.assertFalse(rows)
+            self.assertTrue(errors)
+
+    def test_invalid_nutrition(self):
+        for value in ({"kcal": -1}, {"kcal": 100, "prot": 101}, {"kcal": 100, "lip": float("nan")}):
+            with self.assertRaises(ValueError):
+                app.food_values(value)
+
+    def test_backup_retains_library_and_legacy(self):
+        data = {"recettes": {}, "plats": {}, "garde_manger": {"Riz": self.FOOD, "Ancien": 150}}
+        self.assertEqual(app.validate_data(data), data)
+
+
 class Saving(unittest.TestCase):
     def setUp(self):
         self.original = {"recettes": {}, "plats": {}}
@@ -239,6 +294,36 @@ class Interface(unittest.TestCase):
         at.radio[0].set_value("Recette enregistrée").run()
         self.assertFalse(at.exception)
         self.assertTrue(any("Aucune recette" in x.value for x in at.info))
+
+    def test_memorize_then_quick_add(self):
+        at = self.make_app()
+        next(x for x in at.text_input if x.label == "Nom précis de l’ingrédient").set_value("Riz cru")
+        self.field(at, "kcal pour 100 g").set_value(360.0)
+        self.field(at, "Protéines pour 100 g").set_value(7.0)
+        next(x for x in at.button if x.label == "Enregistrer l’ingrédient").click().run()
+        self.assertFalse(at.exception)
+        self.assertEqual(at.session_state._data["garde_manger"]["Riz cru"]["prot"], 7)
+        self.field(at, "Grammes à ajouter").set_value(200.0)
+        next(x for x in at.button if x.label == "Ajouter à la recette").click().run()
+        self.assertEqual(at.session_state._rows[0]["cal"], 720)
+        self.assertEqual(at.session_state._rows[0]["prot"], 14)
+        self.field(at, "Nouvelle quantité (g)").set_value(50.0)
+        next(x for x in at.button if x.label == "Modifier la quantité sélectionnée").click().run()
+        self.assertFalse(at.exception)
+        self.assertEqual(at.session_state._rows[0]["cal"], 180)
+        self.assertEqual(at.session_state._rows[0]["prot"], 3.5)
+
+    def test_target_protein_portion(self):
+        at = self.make_app()
+        at.session_state._data["recettes"] = {"Poulet": {"total_cal": 1000, "total_prot": 100}}
+        at.radio[0].set_value("Recette enregistrée").run()
+        self.field(at, "Poids net du plat cuit (g)").set_value(1000.0)
+        next(x for x in at.selectbox if x.label == "Calculer à partir de").select("Protéines").run()
+        self.field(at, "Protéines souhaités (g)").set_value(30.0)
+        at.run()
+        self.assertFalse(at.exception)
+        self.assertTrue(any("300 g" in x.value for x in at.success))
+        self.assertTrue(any(x.label == "Protéines" and x.value == "30.0 g" for x in at.metric))
 
 
 if __name__ == "__main__":
