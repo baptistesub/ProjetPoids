@@ -17,12 +17,15 @@ MEAL_WEIGHTS = {"Petit déjeuner": 25, "Déjeuner": 35, "Dîner": 30, "Collation
 DAY_CONFIG_KEY = "_portionneur_journee_v1"
 
 
-def automatic_targets(kcal, protein_percent=20, fat_percent=35, fibres=30):
+def automatic_targets(kcal, protein_percent=20, fat_percent=35, fibres=30, *, body_weight=None, protein_per_kg=2):
     energy = number(kcal, "Calories", positive=True)
     protein = number(protein_percent, "Part des protéines")
     fat = number(fat_percent, "Part des lipides")
+    if body_weight is not None:
+        grams = number(body_weight, "Poids actuel", positive=True) * number(protein_per_kg, "Protéines par kg", positive=True)
+        protein = grams * 400 / energy
     if protein + fat >= 100:
-        raise ValueError("Gardez une part pour les glucides : protéines + lipides doivent être inférieurs à 100 %.")
+        raise ValueError("Les protéines et les lipides occupent toutes les calories : augmentez les calories ou ajustez ces réglages pour garder une part de glucides.")
     return {"kcal": float(energy), "prot": float(energy * protein / 400),
             "lip": float(energy * fat / 900), "gluc": float(energy * (100 - protein - fat) / 400),
             "fibres": float(number(fibres, "Fibres"))}
@@ -358,6 +361,11 @@ def validate_data(data):
         if config.get("nutrition_mode", "auto") not in ("auto", "manual"):
             raise ValueError("Mode de répartition invalide.")
         automatic_targets(1, config.get("protein_percent", 20), config.get("fat_percent", 35))
+        if config.get("protein_basis", "percent") not in ("percent", "weight"):
+            raise ValueError("Mode de calcul des protéines invalide.")
+        if config.get("protein_basis") == "weight":
+            number(config.get("body_weight"), "Poids actuel", positive=True)
+            number(config.get("protein_per_kg", 2), "Protéines par kg", positive=True)
         for key, value in config.get("targets", {}).items():
             if key not in DAY_DEFAULTS:
                 raise ValueError("Repère nutritionnel inconnu.")
@@ -770,13 +778,23 @@ def day_dashboard(data):
                         index=1 if config.get("nutrition_mode") == "manual" else 0)
         new_targets = None
         protein_percent, fat_percent = config.get("protein_percent", 20.0), config.get("fat_percent", 35.0)
+        protein_basis = config.get("protein_basis", "percent")
+        body_weight, protein_per_kg = config.get("body_weight", 70.0), config.get("protein_per_kg", 2.0)
         if mode == "Automatique selon mes calories":
-            st.caption("Répartition de départ : 20 % protéines, 45 % glucides, 35 % lipides. Modifiez les pourcentages si besoin : les glucides complètent le total. Conversion : 4 kcal/g pour protéines et glucides, 9 kcal/g pour lipides ; fibres suivies séparément.")
-            protein_percent = st.number_input("Part des protéines (%)", min_value=0.0, max_value=100.0, value=float(protein_percent), step=1.0)
+            basis_choice = st.radio("Calcul des protéines", ["Selon mon poids (g/kg)", "En pourcentage des calories"], index=0 if protein_basis == "weight" else 1)
+            protein_basis = "weight" if basis_choice == "Selon mon poids (g/kg)" else "percent"
+            if protein_basis == "weight":
+                body_weight = st.number_input("Poids de référence actuel (kg)", min_value=1.0, value=float(body_weight), step=0.5)
+                protein_per_kg = st.number_input("Protéines par kilo de poids de corps (g/kg/j)", min_value=0.1, value=float(protein_per_kg), step=0.1)
+                st.caption("Ces réglages de poids et de protéines sont conservés avec vos objectifs. Si les calories changent, les protéines restent liées au poids ; les glucides s’ajustent.")
+            else:
+                protein_percent = st.number_input("Part des protéines (%)", min_value=0.0, max_value=100.0, value=float(protein_percent), step=1.0)
+            st.caption("Les glucides complètent les calories après les protéines et les lipides. Conversion : 4 kcal/g pour protéines et glucides, 9 kcal/g pour lipides ; fibres suivies séparément.")
             fat_percent = st.number_input("Part des lipides (%)", min_value=0.0, max_value=100.0, value=float(fat_percent), step=1.0)
             fibre_goal = st.number_input("Repère fibres par jour (g)", min_value=0.0, value=float(targets["fibres"]), step=1.0)
             try:
-                new_targets = automatic_targets(energy, protein_percent, fat_percent, fibre_goal)
+                new_targets = automatic_targets(energy, protein_percent, fat_percent, fibre_goal,
+                    body_weight=body_weight if protein_basis == "weight" else None, protein_per_kg=protein_per_kg)
                 st.write(f"Aperçu : {new_targets['prot']:.1f} g de protéines · {new_targets['gluc']:.1f} g de glucides · {new_targets['lip']:.1f} g de lipides")
             except ValueError as exc:
                 st.error(str(exc))
@@ -793,11 +811,17 @@ def day_dashboard(data):
         if st.button("Enregistrer mes repères", disabled=new_targets is None):
             changed = {**config, "targets": new_targets, "snack": snack,
                        "nutrition_mode": "manual" if mode == "Saisie manuelle en grammes" else "auto",
-                       "protein_percent": protein_percent, "fat_percent": fat_percent}
+                       "protein_percent": protein_percent, "fat_percent": fat_percent,
+                       "protein_basis": protein_basis, "body_weight": body_weight, "protein_per_kg": protein_per_kg}
             if persist("planning", set_day_config(data, changed)):
                 st.session_state._notice = "Repères enregistrés. Le bilan reflète vos objectifs actuels ; les repas déjà saisis sont conservés."
                 st.rerun()
         st.caption("Conseil : raisonnez sur l’ensemble de la journée et variez les aliments ; atteindre les macros ne garantit pas à lui seul tous les apports nécessaires.")
+    st.markdown("#### Mes repères par repas")
+    st.table([{"Repas": meal, "Calories (kcal)": readable_amount(goal["kcal"]),
+               "Protéines (g)": readable_amount(goal["prot"]), "Glucides (g)": readable_amount(goal["gluc"]),
+               "Lipides (g)": readable_amount(goal["lip"])} for meal, goal in allocations.items()])
+    st.caption("Estimation souple selon votre objectif enregistré : vous pouvez répartir autrement selon votre faim et vos horaires. Le total de la journée reste le repère.")
     totals = day_totals(eaten)
     balances = day_balance(targets, eaten)
     predicted = day_totals(live_plans)
@@ -826,9 +850,7 @@ def day_dashboard(data):
                  "Déjeuner": "Ex. source de protéines + féculent + légumes + matière grasse",
                  "Dîner": "Ex. source de protéines + féculent selon le repas + légumes",
                  "Collation": "Facultative : selon la faim et le reste de la journée"}
-        st.table([{"Repas": meal, "Exemple d’organisation": ideas[meal], "Repère kcal": readable_amount(goal["kcal"]),
-                   "Protéines (g)": readable_amount(goal["prot"]), "Glucides (g)": readable_amount(goal["gluc"]),
-                   "Lipides (g)": readable_amount(goal["lip"])} for meal, goal in allocations.items()])
+        st.table([{"Repas": meal, "Exemple d’organisation": ideas[meal]} for meal in allocations])
         st.caption("La répartition par repas est indicative : l’ensemble de la journée compte. Sans collation, les repères sont redistribués sur les trois repas ; les repas déjà prévus restent inchangés.")
         if data["recettes"]:
             with st.form("make_day_type"):
