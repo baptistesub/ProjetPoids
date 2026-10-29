@@ -231,7 +231,7 @@ class Interface(unittest.TestCase):
     def test_tare_no_double_subtraction(self):
         at = self.make_app()
         self.field(at, "Calories du plat entier (kcal)").set_value(2000.0)
-        at.radio[1].set_value("Plat avec son contenant").run()
+        next(item for item in at.radio if item.label == "Ce qui est posé sur la balance").set_value("Plat avec son contenant").run()
         self.field(at, "Tare du contenant (g)").set_value(1000.0)
         self.field(at, "Poids affiché sur la balance (g)").set_value(2500.0)
         at.run()
@@ -251,7 +251,7 @@ class Interface(unittest.TestCase):
 
     def test_existing_recipe(self):
         at = self.make_app()
-        at.radio[0].set_value("Recette enregistrée").run()
+        next(item for item in at.radio if item.label == "Comment connaissez-vous les calories ?").set_value("Recette enregistrée").run()
         self.field(at, "Poids net du plat cuit (g)").set_value(1000.0)
         at.run()
         self.assertFalse(at.exception)
@@ -269,7 +269,7 @@ class Interface(unittest.TestCase):
         next(x for x in at.button if x.label == "Enregistrer la recette").click().run()
         self.assertFalse(at.exception)
         self.assertEqual(at.session_state._data["recettes"]["Riz de test"]["total_cal"], 720)
-        at.radio[0].set_value("Recette enregistrée").run()
+        next(item for item in at.radio if item.label == "Comment connaissez-vous les calories ?").set_value("Recette enregistrée").run()
         next(x for x in at.selectbox if x.label == "Recette").select("Riz de test").run()
         self.field(at, "Poids net du plat cuit (g)").set_value(600.0)
         self.field(at, "Calories de la portion (kcal)").set_value(360.0)
@@ -295,7 +295,7 @@ class Interface(unittest.TestCase):
     def test_no_recipe_no_crash(self):
         at = self.make_app()
         at.session_state._data = {"recettes": {}, "plats": {}}
-        at.radio[0].set_value("Recette enregistrée").run()
+        next(item for item in at.radio if item.label == "Comment connaissez-vous les calories ?").set_value("Recette enregistrée").run()
         self.assertFalse(at.exception)
         self.assertTrue(any("Aucune recette" in x.value for x in at.info))
 
@@ -320,7 +320,7 @@ class Interface(unittest.TestCase):
     def test_target_protein_portion(self):
         at = self.make_app()
         at.session_state._data["recettes"] = {"Poulet": {"total_cal": 1000, "total_prot": 100}}
-        at.radio[0].set_value("Recette enregistrée").run()
+        next(item for item in at.radio if item.label == "Comment connaissez-vous les calories ?").set_value("Recette enregistrée").run()
         self.field(at, "Poids net du plat cuit (g)").set_value(1000.0)
         next(x for x in at.selectbox if x.label == "Calculer à partir de").select("Protéines").run()
         self.field(at, "Protéines souhaités (g)").set_value(30.0)
