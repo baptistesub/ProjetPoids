@@ -1,6 +1,6 @@
 # Le Portionneur
 
-Une interface centrée sur une tâche : obtenir le poids d’une portion cuite à partir d’une cible calorique.
+Un outil pour prévoir ses repas, calculer ses portions et suivre les apports réellement consommés sur la journée.
 
 1. Indiquer les calories du plat entier, ou choisir une recette.
 2. Peser le plat après cuisson. Choisir explicitement nourriture seule/balance déjà tarée, ou plat avec son contenant.
@@ -12,7 +12,7 @@ Exemple : 2 000 kcal pour 1 500 g nets cuits donnent une portion de **450 g pour
 
 Les calories des ingrédients peuvent être saisies pour 100 g ou pour la quantité utilisée. Les fractions sont conservées jusqu’au résultat final. Les recettes existantes restent compatibles : les calories sont recalculées depuis leurs ingrédients lorsqu’ils sont présents.
 
-La connexion existante à `ProjetPoids_DB` est conservée via le secret Streamlit `gcp_service_account`. Seules les rubriques `recettes` et `plats` sont utilisées et modifiées. Les anciens journaux, plannings, ingrédients et poids ne sont pas supprimés ; leurs écrans sont retirés de ce parcours simplifié.
+La connexion existante à `ProjetPoids_DB` est conservée. Les rubriques `recettes`, `plats`, `garde_manger`, `planning` et `journal` sont utilisées. L’ancien planning hebdomadaire est préservé : les nouveaux réglages et programmes datés occupent une clé distincte du même onglet. Les anciennes pesées ne sont pas modifiées.
 
 Sans secret configuré, le mode local fonctionne sans compte. Ses données sont temporaires : l’interface l’indique et propose un export/import JSON. Avec une connexion configurée mais défaillante, le chargement s’arrête sans écrire de données par défaut. Une sauvegarde distante échouée ne fait pas apparaître un succès.
 
@@ -30,10 +30,10 @@ L’application n’appelle aucun moteur d’IA ni base alimentaire externe. Les
 ## Vérification
 
 ```sh
-python -m unittest discover -s . -p test_portionneur.py -v
+python -m unittest discover -s . -p 'test_*.py' -v
 ```
 
-39 tests couvrent notamment les deux régressions observées sur la V18 (cible négative et portion dépassant le plat), les valeurs nulles/non finies, la tare, l’arrondi, les virgules décimales dans les fonctions de calcul, la création puis réutilisation d’une recette, les doublons, les changements de formulaire et les sauvegardes échouées. Le test de propriétés exécute 2 000 calculs déterministes supplémentaires.
+56 tests couvrent notamment les deux régressions observées sur la V18 (cible négative et portion dépassant le plat), les valeurs nulles/non finies, la tare, l’arrondi, les virgules décimales dans les fonctions de calcul, la création puis réutilisation d’une recette, les doublons, les changements de formulaire et les sauvegardes échouées. Le test de propriétés exécute 2 000 calculs déterministes supplémentaires.
 
 Les tests Streamlit utilisent une session locale et les tests de sauvegarde simulent Google Sheets. Les écritures sur la vraie base et le déploiement Streamlit restent à valider avant mise en service. L’ancienne version en ligne a été testée dans Chrome ; la prévisualisation locale dans Chrome a été bloquée par les restrictions réseau de l’environnement de travail.
 
@@ -51,3 +51,19 @@ Les portions peuvent aussi être calculées depuis une quantité choisie de prot
 Validation : 39 tests passent, incluant les 28 tests précédents et 11 tests des nouveaux parcours, macros partielles, collage, mémorisation et ajustement de quantité. Le test de propriétés conserve ses 2 000 calculs déterministes.
 
 Référence composition : Anses, table Ciqual, https://ciqual.anses.fr/. Les étiquettes des produits effectivement utilisés restent à vérifier ; les macronutriments ne servent pas à remplacer arbitrairement l’énergie déclarée (les fibres et d’autres composants contribuent aussi à l’énergie).
+
+## Ma journée : trois repas et une collation facultative
+
+La première page distingue strictement le programme prévu du journal réellement consommé. Prévoir un repas n’ajoute aucune consommation. L’utilisateur indique la quantité réellement mangée puis valide. Les totaux et les restes sont recalculés depuis ces consommations seulement.
+
+Les repères proposés sont modifiables. Ils constituent un point de départ discuté, pas une mesure des besoins ni une garantie de perte de poids. Sans collation, la répartition indicative se redistribue entre les trois repas. Cela ne modifie ni les repas déjà saisis ni les objectifs quotidiens.
+
+La journée type propose une organisation et des repères par repas. L’utilisateur choisit ses recettes et indique le poids net cuit de chaque plat entier ; les portions sont calculées d’après la répartition calorique, puis les macros réellement obtenues sont affichées. Ce n’est pas une optimisation garantissant tous les objectifs nutritionnels. Un nutriment incomplet rend son total et son reste indéterminés, pas égaux à zéro.
+
+Les repas prévus et mangés utilisent une copie des valeurs nutritionnelles au moment de la saisie : une modification ultérieure de la recette ne change pas les anciennes journées. Un double clic sur un repas ne le compte pas deux fois. L’annulation et la restauration sont possibles. Une restauration qui créerait un double comptage est bloquée. Les consommations futures sont désactivées.
+
+La date du jour suit Europe/Paris. Les données se sauvegardent dans les onglets existants, avec le contrôle de conflit déjà présent. Les écritures Google Sheets restent non transactionnelles : éviter les modifications simultanées de plusieurs sessions. L’export/import inclut désormais les programmes, les repères et le journal.
+
+Validation : les 56 tests comprennent les 39 précédents et 17 tests du planning et du journal. Ils couvrent les trois/quatre repas, la conservation exacte des totaux répartis, les très petites valeurs, les quantités réellement consommées, les doubles clics, l’annulation, la restauration, les dates futures, les jours séparés, les données nutritionnelles manquantes, les sauvegardes et la conservation des anciens programmes. En ligne, un repas prévu à 360 kcal est resté hors du consommé ; une moitié consommée a compté 180 kcal et laissé 2 220 kcal sur le repère de 2 400. Cet essai a été annulé et retiré du programme.
+
+L’émulation de l’écran de téléphone n’a pas permis de confirmer les dimensions attendues sur l’application ; le rendu mobile reste à valider sur un appareil réel. L’affichage ordinateur et les parcours décrits ont été vérifiés. La fonction photo de code-barres reste une évolution locale distincte et n’est pas incluse dans cette publication.
