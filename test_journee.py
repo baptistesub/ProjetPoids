@@ -8,6 +8,20 @@ from test_portionneur import app, FILE
 
 
 class DayCalculations(unittest.TestCase):
+    def test_weight_based_protein_and_meal_estimates(self):
+        targets = app.automatic_targets(2400, body_weight=85, protein_per_kg=2)
+        self.assertEqual(targets['prot'], 170)
+        self.assertEqual(targets['gluc'], 220)
+        self.assertAlmostEqual(targets['lip'], 840 / 9)
+        self.assertEqual(app.automatic_targets(2200, body_weight=85)['prot'], 170)
+        self.assertEqual(app.automatic_targets(2400, body_weight=75)['prot'], 150)
+        parts = app.meal_targets(targets, True)
+        self.assertEqual(parts['Petit déjeuner']['prot'], Decimal('42.5'))
+        self.assertEqual(parts['Déjeuner']['prot'], Decimal('59.5'))
+        self.assertEqual(parts['Collation']['prot'], Decimal('17.0'))
+        with self.assertRaises(ValueError):
+            app.automatic_targets(1000, body_weight=85)
+
     def test_automatic_macros_conserve_energy_and_scale(self):
         for energy in (1, 1800, 2200, 2400, 2800):
             targets = app.automatic_targets(energy)
@@ -203,6 +217,24 @@ class DayInterface(unittest.TestCase):
         self.assertEqual(app.day_config(at.session_state._data)['targets']['prot'], 125)
         self.button(at, "Enregistrer mes repères").click().run()
         self.assertEqual(app.day_config(at.session_state._data)['targets']['prot'], 100)
+
+    def test_weight_based_goal_persists_and_scales_carbs(self):
+        at = self.make_app()
+        next(item for item in at.radio if item.label == "Calcul des protéines").set_value("Selon mon poids (g/kg)").run()
+        self.field(at, "Poids de référence actuel (kg)").set_value(85.0)
+        self.button(at, "Enregistrer mes repères").click().run()
+        self.assertFalse(at.exception)
+        config = app.day_config(at.session_state._data)
+        self.assertEqual(config['targets']['prot'], 170)
+        self.assertEqual(config['targets']['gluc'], 220)
+        self.assertEqual(config['protein_basis'], 'weight')
+        self.assertEqual(config['body_weight'], 85)
+        self.assertTrue(any('Mes repères par repas' in item.value for item in at.markdown))
+        self.field(at, "Repère calories par jour (kcal)").set_value(2200.0)
+        self.button(at, "Enregistrer mes repères").click().run()
+        self.assertFalse(at.exception)
+        self.assertEqual(app.day_config(at.session_state._data)['targets']['prot'], 170)
+        self.assertEqual(app.day_config(at.session_state._data)['targets']['gluc'], 187.5)
 
     def test_profile_estimate_applies_without_saving_profile(self):
         at = self.make_app()
