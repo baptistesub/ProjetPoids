@@ -8,6 +8,28 @@ from test_portionneur import app, FILE
 
 
 class DayCalculations(unittest.TestCase):
+    def test_automatic_macros_conserve_energy_and_scale(self):
+        for energy in (1, 1800, 2200, 2400, 2800):
+            targets = app.automatic_targets(energy)
+            self.assertAlmostEqual(4 * (targets['prot'] + targets['gluc']) + 9 * targets['lip'], energy)
+            self.assertEqual(targets['prot'], energy * .2 / 4)
+            self.assertEqual(targets['gluc'], energy * .45 / 4)
+        with self.assertRaises(ValueError):
+            app.automatic_targets(2400, 70, 35)
+        for value in (0, -1, float('nan')):
+            with self.assertRaises(ValueError):
+                app.automatic_targets(value)
+
+    def test_black_reference_and_reduction(self):
+        result = app.estimate_energy('Homme', 26, 176, 85, 1.5, 10)
+        self.assertAlmostEqual(result['rest'], 1896, delta=3)
+        self.assertAlmostEqual(result['maintenance'], result['rest'] * 1.5)
+        self.assertAlmostEqual(result['target'], result['maintenance'] * .9)
+        self.assertLess(app.estimate_energy('Femme', 26, 176, 85)['rest'], result['rest'])
+        for args in [('Homme', 17, 176, 85), ('Homme', 26, 176, 40), ('Autre', 26, 176, 85)]:
+            with self.assertRaises(ValueError):
+                app.estimate_energy(*args)
+
     def recipe(self):
         return {"total_cal": 2000, "ingredients": [{"nom": "Plat de test", "poids": 1500,
                 "cal": 2000, "prot": 100, "gluc": 250, "lip": 50, "fibres": 20,
@@ -162,8 +184,41 @@ class DayInterface(unittest.TestCase):
         config = app.day_config(at.session_state._data)
         self.assertFalse(config["snack"])
         self.assertEqual(config["targets"]["kcal"], 2200)
+        self.assertEqual(config["targets"]["prot"], 110)
+        self.assertEqual(config["targets"]["gluc"], 247.5)
+        self.assertAlmostEqual(config["targets"]["lip"], 2200 * .35 / 9)
         self.assertEqual(next(item for item in at.selectbox if item.label == "Repas à préparer").options,
                          ["Petit déjeuner", "Déjeuner", "Dîner"])
+
+    def test_manual_goals_and_auto_preview_before_save(self):
+        at = self.make_app()
+        next(item for item in at.radio if item.label == "Répartition des macronutriments").set_value("Saisie manuelle en grammes").run()
+        self.field(at, "Repère protéines par jour (g)").set_value(125.0)
+        self.button(at, "Enregistrer mes repères").click().run()
+        self.assertFalse(at.exception)
+        self.assertEqual(app.day_config(at.session_state._data)['targets']['prot'], 125)
+        self.assertEqual(app.day_config(at.session_state._data)['nutrition_mode'], 'manual')
+        next(item for item in at.radio if item.label == "Répartition des macronutriments").set_value("Automatique selon mes calories").run()
+        self.field(at, "Repère calories par jour (kcal)").set_value(2000.0).run()
+        self.assertEqual(app.day_config(at.session_state._data)['targets']['prot'], 125)
+        self.button(at, "Enregistrer mes repères").click().run()
+        self.assertEqual(app.day_config(at.session_state._data)['targets']['prot'], 100)
+
+    def test_profile_estimate_applies_without_saving_profile(self):
+        at = self.make_app()
+        next(item for item in at.radio if item.label == "Comment choisir mes calories ?").set_value("Estimer avec mon profil").run()
+        self.field(at, "Âge (ans)").set_value(26)
+        self.field(at, "Taille (cm)").set_value(176.0)
+        self.field(at, "Poids actuel (kg)").set_value(85.0)
+        self.button(at, "Utiliser cette estimation").click().run()
+        self.assertFalse(at.exception)
+        self.assertEqual(self.field(at, "Repère calories par jour (kcal)").value, 2550)
+        self.button(at, "Enregistrer mes repères").click().run()
+        config = app.day_config(at.session_state._data)
+        self.assertEqual(config['targets']['kcal'], 2550)
+        self.assertNotIn('weight', config)
+        self.assertNotIn('age', config)
+        self.assertFalse(any('Ce que les cours' in item.label for item in at.expander))
 
     def test_day_separation_and_future_consumption_disabled(self):
         at = self.make_app()
