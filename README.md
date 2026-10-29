@@ -33,6 +33,21 @@ L’application n’appelle aucun moteur d’IA ni base alimentaire externe. Les
 python -m unittest discover -s . -p test_portionneur.py -v
 ```
 
-28 tests couvrent notamment les deux régressions observées sur la V18 (cible négative et portion dépassant le plat), les valeurs nulles/non finies, la tare, l’arrondi, les virgules décimales dans les fonctions de calcul, la création puis réutilisation d’une recette, les doublons, les changements de formulaire et les sauvegardes échouées. Le test de propriétés exécute 2 000 calculs déterministes supplémentaires.
+39 tests couvrent notamment les deux régressions observées sur la V18 (cible négative et portion dépassant le plat), les valeurs nulles/non finies, la tare, l’arrondi, les virgules décimales dans les fonctions de calcul, la création puis réutilisation d’une recette, les doublons, les changements de formulaire et les sauvegardes échouées. Le test de propriétés exécute 2 000 calculs déterministes supplémentaires.
 
 Les tests Streamlit utilisent une session locale et les tests de sauvegarde simulent Google Sheets. Les écritures sur la vraie base et le déploiement Streamlit restent à valider avant mise en service. L’ancienne version en ligne a été testée dans Chrome ; la prévisualisation locale dans Chrome a été bloquée par les restrictions réseau de l’environnement de travail.
+
+
+## Évolution nutrition et saisie rapide
+
+Les cours fournis par l’utilisateur mettent en avant la complémentarité des macronutriments et l’adaptation aux pratiques sportives. Cette version affiche protéines, glucides, lipides et fibres pour le poids effectivement conseillé. Une valeur absente reste inconnue, y compris lorsqu’un seul ingrédient de la recette n’est pas renseigné. Aucune dose de complément, restriction ou cible journalière n’est automatiquement prescrite. Les plages ambiguës ou divergentes des supports ne sont pas utilisées comme formules.
+
+La bibliothèque existante `garde_manger` est réutilisée, y compris ses anciens enregistrements contenant seulement les calories. Les nouvelles fiches indiquent les valeurs pour 100 g et une source facultative (étiquette ou Ciqual). Le nom doit préciser l’état cru/cuit/égoutté correspondant au poids saisi. Les recettes gardent une copie des valeurs de création : modifier une fiche ne réécrit pas leur historique.
+
+Le parcours rapide est : choisir un ingrédient mémorisé, saisir les grammes, ajouter. Un collage multiligne accepte `150 g Riz cru` ou `Riz cru;150`, avec virgule décimale. Les noms inconnus ou ambigus sont signalés ; aucune valeur n’est inventée et aucune ligne n’est ajoutée si la liste contient une erreur. Les quantités peuvent être corrigées avec recalcul proportionnel. La saisie libre calorique reste accessible et ne prétend pas fournir des macros inconnues.
+
+Les portions peuvent aussi être calculées depuis une quantité choisie de protéines ou de glucides, uniquement si ce nutriment est renseigné pour toute la recette. Ce mode n’est pas une recommandation de quantité. L’export/import inclut désormais la bibliothèque.
+
+Validation : 39 tests passent, incluant les 28 tests précédents et 11 tests des nouveaux parcours, macros partielles, collage, mémorisation et ajustement de quantité. Le test de propriétés conserve ses 2 000 calculs déterministes.
+
+Référence composition : Anses, table Ciqual, https://ciqual.anses.fr/. Les étiquettes des produits effectivement utilisés restent à vérifier ; les macronutriments ne servent pas à remplacer arbitrairement l’énergie déclarée (les fibres et d’autres composants contribuent aussi à l’énergie).
