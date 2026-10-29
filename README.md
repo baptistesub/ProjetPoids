@@ -33,14 +33,14 @@ L’application n’appelle aucun moteur d’IA ni base alimentaire externe. Les
 python -m unittest discover -s . -p 'test_*.py' -v
 ```
 
-56 tests couvrent notamment les deux régressions observées sur la V18 (cible négative et portion dépassant le plat), les valeurs nulles/non finies, la tare, l’arrondi, les virgules décimales dans les fonctions de calcul, la création puis réutilisation d’une recette, les doublons, les changements de formulaire et les sauvegardes échouées. Le test de propriétés exécute 2 000 calculs déterministes supplémentaires.
+60 tests couvrent notamment les deux régressions observées sur la V18 (cible négative et portion dépassant le plat), les valeurs nulles/non finies, la tare, l’arrondi, les virgules décimales dans les fonctions de calcul, la création puis réutilisation d’une recette, les doublons, les changements de formulaire et les sauvegardes échouées. Le test de propriétés exécute 2 000 calculs déterministes supplémentaires.
 
-Les tests Streamlit utilisent une session locale et les tests de sauvegarde simulent Google Sheets. Les écritures sur la vraie base et le déploiement Streamlit restent à valider avant mise en service. L’ancienne version en ligne a été testée dans Chrome ; la prévisualisation locale dans Chrome a été bloquée par les restrictions réseau de l’environnement de travail.
+Les tests Streamlit utilisent une session locale et les tests de sauvegarde simulent Google Sheets. Les parcours de planning, consommation et annulation ont également été vérifiés dans Chrome sur le déploiement Streamlit. La prévisualisation locale dans Chrome avait été bloquée par les restrictions réseau de l’environnement de travail.
 
 
 ## Évolution nutrition et saisie rapide
 
-Les cours fournis par l’utilisateur mettent en avant la complémentarité des macronutriments et l’adaptation aux pratiques sportives. Cette version affiche protéines, glucides, lipides et fibres pour le poids effectivement conseillé. Une valeur absente reste inconnue, y compris lorsqu’un seul ingrédient de la recette n’est pas renseigné. Aucune dose de complément, restriction ou cible journalière n’est automatiquement prescrite. Les plages ambiguës ou divergentes des supports ne sont pas utilisées comme formules.
+Les cours fournis par l’utilisateur mettent en avant la complémentarité des macronutriments et l’adaptation aux pratiques sportives. Cette version affiche protéines, glucides, lipides et fibres pour le poids effectivement conseillé. Une valeur absente reste inconnue, y compris lorsqu’un seul ingrédient de la recette n’est pas renseigné. Les plages ambiguës ou divergentes des supports ne sont pas utilisées comme formules. L’estimation et les objectifs journaliers restent un choix explicite de l’utilisateur.
 
 La bibliothèque existante `garde_manger` est réutilisée, y compris ses anciens enregistrements contenant seulement les calories. Les nouvelles fiches indiquent les valeurs pour 100 g et une source facultative (étiquette ou Ciqual). Le nom doit préciser l’état cru/cuit/égoutté correspondant au poids saisi. Les recettes gardent une copie des valeurs de création : modifier une fiche ne réécrit pas leur historique.
 
@@ -67,3 +67,15 @@ La date du jour suit Europe/Paris. Les données se sauvegardent dans les onglets
 Validation : les 56 tests comprennent les 39 précédents et 17 tests du planning et du journal. Ils couvrent les trois/quatre repas, la conservation exacte des totaux répartis, les très petites valeurs, les quantités réellement consommées, les doubles clics, l’annulation, la restauration, les dates futures, les jours séparés, les données nutritionnelles manquantes, les sauvegardes et la conservation des anciens programmes. En ligne, un repas prévu à 360 kcal est resté hors du consommé ; une moitié consommée a compté 180 kcal et laissé 2 220 kcal sur le repère de 2 400. Cet essai a été annulé et retiré du programme.
 
 L’émulation de l’écran de téléphone n’a pas permis de confirmer les dimensions attendues sur l’application ; le rendu mobile reste à valider sur un appareil réel. L’affichage ordinateur et les parcours décrits ont été vérifiés. La fonction photo de code-barres reste une évolution locale distincte et n’est pas incluse dans cette publication.
+
+## Objectif calorique et macros liées
+
+L’objectif enregistré est visible dès le début de Ma journée. Dans les réglages, l’utilisateur saisit ses calories ou demande une estimation adulte depuis son profil (Black : constantes homme 1,083 / femme 0,963, poids en kg, taille en m, âge en années, conversion MJ en kcal par 1000/4,1855). Le maintien est le repos multiplié par le niveau d’activité choisi. Une réduction de 0 à 20 % est un choix ajustable, sans rythme de perte garanti ; 0 % correspond au maintien. Aucun objectif de perte n’est proposé pour un IMC inférieur à 18,5. Les champs du profil restent en session et ne sont pas enregistrés dans la base ni dans le dépôt.
+
+Référence : [AFDN, besoins et apports nutritionnels](https://www.afdn.org/sites/www.afdn.org/files/documentation/2021-11/Besoins%20et%20apports%20nutritionnels.pdf). L’équation fournit une estimation, pas une mesure individuelle.
+
+En automatique, les pourcentages de départ sont 20 % protéines, 35 % lipides, le complément en glucides (45 %). Les grammes sont recalculés dès le changement des calories ou des pourcentages : énergie × part / 4 pour protéines et glucides, / 9 pour lipides. Les fibres restent un objectif séparé. Cette répartition énergétique sert aux objectifs, sans remplacer les calories des étiquettes des aliments. La somme protéines + lipides doit rester inférieure à 100 %. Le mode manuel autorise des grammes indépendants et signale une incohérence énergétique importante.
+
+L’aperçu n’est appliqué qu’après Enregistrer mes repères. L’enregistrement actualise les objectifs et les répartitions indicatives des nouveaux repas ; les quantités et valeurs des repas déjà prévus ou mangés restent intactes. Le mode et les pourcentages sont conservés dans les sauvegardes. Atteindre ces macros ne garantit pas tous les apports en micronutriments.
+
+Validation : 60 tests passent, dont quatre nouveaux tests sur la conservation de l’énergie, la formule de Black, le choix manuel/automatique, l’aperçu avant enregistrement et l’application d’une estimation sans conservation du profil. Les anciens tests d’interface ciblent désormais les libellés, indépendamment de l’ordre des boutons de choix.
