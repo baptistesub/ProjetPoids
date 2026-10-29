@@ -129,6 +129,10 @@ class NutritionAndSpeed(unittest.TestCase):
         self.assertIsNone(app.nutrient_totals({"ingredients": [row]})["prot"])
         zero = app.row_from_food("Connu", 100, {"kcal": 0, "prot": 0})
         self.assertEqual(app.nutrient_totals({"ingredients": [zero]})["prot"], 0)
+        legacy = {"kcal": 160, "prot": 0, "gluc": 0, "lip": 0}
+        self.assertIsNone(app.food_values(legacy)["prot"])
+        self.assertIsNone(app.nutrient_totals({"ingredients": [{"nom": "Avocat", "poids": 100, "cal": 160, "prot": 0, "gluc": 0, "lip": 0}]})["prot"])
+        self.assertEqual(app.food_values({**legacy, "nutrition_verified": True})["prot"], 0)
 
     def test_partial_macros_not_reported_as_complete(self):
         rows = [app.row_from_food("a", 100, self.FOOD), app.ingredient_row("b", 10, 100, "pour 100 g")]
