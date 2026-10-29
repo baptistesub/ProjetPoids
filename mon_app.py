@@ -4,11 +4,111 @@ import hashlib
 import json
 import re
 import unicodedata
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
+from uuid import uuid4
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 import streamlit as st
 
 NUTRIENTS = {"prot": "Protéines", "gluc": "Glucides", "lip": "Lipides", "fibres": "Fibres"}
+DAY_DEFAULTS = {"kcal": 2400.0, "prot": 120.0, "gluc": 265.0, "lip": 95.0, "fibres": 30.0}
+MEAL_WEIGHTS = {"Petit déjeuner": 25, "Déjeuner": 35, "Dîner": 30, "Collation": 10}
+DAY_CONFIG_KEY = "_portionneur_journee_v1"
+
+
+def today_paris():
+    return datetime.now(ZoneInfo("Europe/Paris")).date()
+
+
+def day_config(data):
+    value = data.get("planning", {}).get(DAY_CONFIG_KEY, {})
+    return {"targets": {**DAY_DEFAULTS, **value.get("targets", {})},
+            "snack": value.get("snack", True), "days": copy.deepcopy(value.get("days", {}))}
+
+
+def meal_targets(targets, snack=True):
+    weights = {key: value for key, value in MEAL_WEIGHTS.items() if snack or key != "Collation"}
+    total = sum(weights.values())
+    result = {key: {} for key in weights}
+    for nutrient in ("kcal", *NUTRIENTS):
+        target = number(targets.get(nutrient, 0), nutrient)
+        allocated = Decimal(0)
+        for index, (meal, weight) in enumerate(weights.items()):
+            amount = (target - allocated if index == len(weights) - 1 else
+                      min(target - allocated, (target * weight / total).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)))
+            result[meal][nutrient] = amount
+            allocated += amount
+    return result
+
+
+def day_totals(entries):
+    active = [entry for entry in entries if not entry.get("annule") and not entry.get("retire")]
+    totals = {"kcal": sum((number(entry["kcal"], "Calories") for entry in active), Decimal(0))}
+    for key in NUTRIENTS:
+        totals[key] = (sum((number(entry[key], key) for entry in active), Decimal(0))
+                       if all(entry.get(key) is not None and not legacy_unknown_macros(entry) for entry in active) else None)
+    return totals
+
+
+def day_balance(targets, entries):
+    consumed = day_totals(entries)
+    return {key: None if consumed[key] is None else number(targets[key], key) - consumed[key]
+            for key in ("kcal", *NUTRIENTS)}
+
+
+def entry_from_recipe(name, recipe, net_weight, target, meal):
+    if meal not in MEAL_WEIGHTS:
+        raise ValueError("Choisissez un repas valide.")
+    result = calculate_portion(recipe_total(recipe), net_weight, target)
+    totals = nutrient_totals(recipe)
+    entry = {"id": uuid4().hex, "nom": name, "repas": meal, "poids": float(result["grams"]),
+             "kcal": float(result["actual_kcal"]), "nutrition_verified": True, "source_type": "recette"}
+    for key in NUTRIENTS:
+        entry[key] = None if totals[key] is None else float(totals[key] * result["grams"] / result["net"])
+    return entry
+
+
+def entry_from_food(name, food, grams, meal):
+    if meal not in MEAL_WEIGHTS:
+        raise ValueError("Choisissez un repas valide.")
+    row = row_from_food(name, grams, food)
+    return {"id": uuid4().hex, "nom": name, "repas": meal, "poids": row["poids"], "kcal": row["cal"],
+            **{key: row.get(key) for key in NUTRIENTS}, "nutrition_verified": True, "source_type": "aliment"}
+
+
+def record_consumption(entries, planned, actual_weight=None):
+    """Un repas prévu n’est jamais mangé implicitement ; double clic sans double comptage."""
+    if any(entry.get("plan_id") == planned["id"] and not entry.get("annule") for entry in entries):
+        return copy.deepcopy(entries)
+    factor = Decimal(1) if actual_weight is None else number(actual_weight, "Quantité mangée", positive=True) / number(planned["poids"], "Quantité prévue", positive=True)
+    event = copy.deepcopy(planned)
+    event.update(id=uuid4().hex, plan_id=planned["id"], heure=datetime.now(ZoneInfo("Europe/Paris")).strftime("%H:%M"))
+    for key in ("poids", "kcal", *NUTRIENTS):
+        if event.get(key) is not None:
+            event[key] = float(number(event[key], key) * factor)
+    return [*copy.deepcopy(entries), event]
+
+
+def set_day_config(data, config):
+    return {**copy.deepcopy(data.get("planning", {})), DAY_CONFIG_KEY: config}
+
+
+def change_plan(data, day, entries):
+    config = day_config(data)
+    config["days"][day] = copy.deepcopy(entries)
+    return set_day_config(data, config)
+
+
+def validate_day_entry(entry):
+    if not isinstance(entry, dict):
+        raise ValueError("Repas invalide dans le journal ou le planning.")
+    number(entry.get("kcal"), "Calories du repas")
+    if entry.get("poids") is not None:
+        number(entry["poids"], "Poids du repas")
+    for key in NUTRIENTS:
+        if entry.get(key) is not None:
+            number(entry[key], key)
 
 
 def legacy_unknown_macros(record, energy_key="kcal"):
@@ -213,6 +313,40 @@ def validate_data(data):
                 raise ValueError("Un ingrédient n’a pas de nom.")
             food_values(values)
         result["garde_manger"] = copy.deepcopy(data["garde_manger"])
+    for key in ("planning", "journal"):
+        if key in data:
+            if not isinstance(data[key], dict):
+                raise ValueError(f"La rubrique {key} est invalide.")
+            result[key] = copy.deepcopy(data[key])
+    config = result.get("planning", {}).get(DAY_CONFIG_KEY)
+    if config is not None:
+        if not isinstance(config, dict) or not isinstance(config.get("days", {}), dict):
+            raise ValueError("Configuration du planning invalide.")
+        if not isinstance(config.get("targets", {}), dict) or not isinstance(config.get("snack", True), bool):
+            raise ValueError("Repères de la journée invalides.")
+        for key, value in config.get("targets", {}).items():
+            if key not in DAY_DEFAULTS:
+                raise ValueError("Repère nutritionnel inconnu.")
+            number(value, key, positive=(key == "kcal"))
+        for day, entries in config.get("days", {}).items():
+            date.fromisoformat(day)
+            if not isinstance(entries, list):
+                raise ValueError("Programme de journée invalide.")
+            ids = set()
+            for entry in entries:
+                validate_day_entry(entry)
+                if (not isinstance(entry.get("id"), str) or not entry["id"] or entry["id"] in ids
+                        or entry.get("repas") not in MEAL_WEIGHTS or not isinstance(entry.get("nom"), str)
+                        or not entry["nom"].strip()):
+                    raise ValueError("Un repas prévu n’a pas d’identifiant ou de catégorie valide.")
+                number(entry.get("poids"), "Poids prévu", positive=True)
+                ids.add(entry["id"])
+    for day, entries in result.get("journal", {}).items():
+        date.fromisoformat(day)
+        if not isinstance(entries, list):
+            raise ValueError("Journal alimentaire invalide.")
+        for entry in entries:
+            validate_day_entry(entry)
     return result
 
 
@@ -241,12 +375,13 @@ def read_cloud_key(key):
 
 def boot():
     if st.session_state.get("_booted"):
-        if st.session_state.get("_cloud_ready") and "garde_manger" not in st.session_state._data:
+        missing = [key for key in ("garde_manger", "planning", "journal") if key not in st.session_state._data]
+        if st.session_state.get("_cloud_ready") and missing:
             try:
-                library = read_cloud_key("garde_manger")
-                validate_data({**st.session_state._data, "garde_manger": library})
-                st.session_state._data["garde_manger"] = library
-                st.session_state._versions["garde_manger"] = fingerprint(library)
+                extra = {key: read_cloud_key(key) for key in missing}
+                validate_data({**st.session_state._data, **extra})
+                st.session_state._data.update(extra)
+                st.session_state._versions.update({key: fingerprint(value) for key, value in extra.items()})
             except Exception:
                 st.error("Impossible de charger votre bibliothèque d’ingrédients. Rechargez la page pour réessayer.")
                 st.stop()
@@ -257,7 +392,7 @@ def boot():
         configured = False
     if configured:
         try:
-            data = validate_data({key: read_cloud_key(key) for key in ("recettes", "plats", "garde_manger")})
+            data = validate_data({key: read_cloud_key(key) for key in ("recettes", "plats", "garde_manger", "planning", "journal")})
         except Exception:
             st.error("Impossible de charger vos recettes. Aucune donnée n’a été remplacée. Réessayez plus tard.")
             if st.button("Réessayer le chargement"):
@@ -265,7 +400,7 @@ def boot():
                 st.rerun()
             st.stop()
     else:
-        data = {"recettes": {}, "plats": {}, "garde_manger": {}}
+        data = {"recettes": {}, "plats": {}, "garde_manger": {}, "planning": {}, "journal": {}}
     st.session_state.update(_data=data, _cloud_ready=configured, _booted=True,
                             _versions={key: fingerprint(value) for key, value in data.items()})
 
@@ -492,7 +627,7 @@ def backup(data):
     st.subheader("Conserver vos recettes et contenants")
     st.download_button("Télécharger ma sauvegarde", json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False),
                        file_name="portionneur-sauvegarde.json", mime="application/json")
-    st.caption("La sauvegarde contient les recettes, les contenants et votre bibliothèque d’ingrédients. Elle n’inclut pas les anciens journaux ou plannings.")
+    st.caption("La sauvegarde contient vos recettes, ingrédients, contenants, repères, programmes et journal alimentaire. Les anciennes données de planning et de journal sont conservées.")
     uploaded = st.file_uploader("Restaurer une sauvegarde JSON", type=["json"])
     if uploaded is not None:
         try:
@@ -550,6 +685,194 @@ def ingredients(data):
     st.link_button("Consulter les aliments de référence Ciqual", "https://ciqual.anses.fr/")
 
 
+def day_table(entries):
+    return [{"Repas": item.get("repas", "Autre"), "Aliment / recette": item.get("nom", item.get("recette", "Repas")),
+             "Poids (g)": item.get("poids", "—"), "kcal": float(rounded(item["kcal"], 1)),
+             **{label + " (g)": "À compléter" if item.get(key) is None or legacy_unknown_macros(item)
+                else float(rounded(item[key], 1)) for key, label in NUTRIENTS.items()}}
+            for item in entries if not item.get("annule") and not item.get("retire")]
+
+
+def day_dashboard(data):
+    st.subheader("Ma journée : prévoir, manger, ajuster")
+    selected_date = st.date_input("Journée", value=today_paris(), key="day_selected_date")
+    day = selected_date.isoformat()
+    config = day_config(data)
+    targets = config["targets"]
+    planned = config["days"].get(day, [])
+    journal = data.get("journal", {})
+    eaten = journal.get(day, [])
+    live_plans = [entry for entry in planned if not entry.get("retire")]
+    allocations = meal_targets(targets, config["snack"])
+
+    with st.expander("Mes repères quotidiens et ma collation"):
+        st.caption("Point de départ discuté ensemble, à ajuster : environ 2 400 kcal, 120 g de protéines, 265 g de glucides, 95 g de lipides et 30 g de fibres. Ce ne sont pas des besoins mesurés ni une garantie de perte de poids.")
+        with st.form("day_targets_form"):
+            new_targets = {"kcal": st.number_input("Repère calories par jour (kcal)", min_value=1.0, value=float(targets["kcal"]), step=50.0)}
+            for key, label in NUTRIENTS.items():
+                new_targets[key] = st.number_input(f"Repère {label.lower()} par jour (g)", min_value=0.0,
+                                                    value=float(targets[key]), step=1.0)
+            snack = st.checkbox("Prévoir une collation facultative", value=config["snack"])
+            if st.form_submit_button("Enregistrer mes repères"):
+                changed = {**config, "targets": new_targets, "snack": snack}
+                if persist("planning", set_day_config(data, changed)):
+                    st.session_state._notice = "Repères enregistrés. Le bilan reflète vos objectifs actuels ; les repas déjà saisis sont conservés."
+                    st.rerun()
+    totals = day_totals(eaten)
+    balances = day_balance(targets, eaten)
+    predicted = day_totals(live_plans)
+    st.markdown("#### Ce que j’ai réellement mangé")
+    for column, key in zip(st.columns(4), ("kcal", "prot", "gluc", "lip")):
+        label = "Calories" if key == "kcal" else NUTRIENTS[key]
+        unit = "kcal" if key == "kcal" else "g"
+        value, remaining = totals[key], balances[key]
+        column.metric(label, "Incomplet" if value is None else f"{rounded(value, 1):f} {unit}")
+        if remaining is None:
+            column.caption("Reste indéterminé : données manquantes")
+        elif remaining < 0:
+            column.caption(f"Au-dessus du repère : {rounded(-remaining, 1):f} {unit}")
+        else:
+            column.caption(f"Reste par rapport au repère : {rounded(remaining, 1):f} {unit}")
+    st.progress(float(min(Decimal(1), max(Decimal(0), totals["kcal"] / number(targets["kcal"], "Objectif", positive=True)))))
+    fibre_total = totals["fibres"]
+    st.caption("Fibres : données incomplètes" if fibre_total is None else
+               f"Fibres consommées : {rounded(fibre_total, 1):f} g · repère {targets['fibres']} g")
+    if any(value is None for value in totals.values()):
+        st.info("Un nutriment manque pour au moins un aliment mangé : son total et son reste ne peuvent pas être calculés de façon fiable. Ce n’est pas un zéro.")
+    st.caption("Seuls les repas marqués comme mangés sont décomptés. Un dépassement ne modifie pas automatiquement les autres repas et n’est pas une consigne de sauter un repas.")
+
+    with st.expander("Journée type : une organisation souple", expanded=not live_plans):
+        ideas = {"Petit déjeuner": "Ex. produit laitier ou alternative + fruit + pain ou céréales",
+                 "Déjeuner": "Ex. source de protéines + féculent + légumes + matière grasse",
+                 "Dîner": "Ex. source de protéines + féculent selon le repas + légumes",
+                 "Collation": "Facultative : selon la faim et le reste de la journée"}
+        st.table([{"Repas": meal, "Exemple d’organisation": ideas[meal], "Repère kcal": float(goal["kcal"]),
+                   "Protéines (g)": float(goal["prot"]), "Glucides (g)": float(goal["gluc"]),
+                   "Lipides (g)": float(goal["lip"])} for meal, goal in allocations.items()])
+        st.caption("La répartition par repas est indicative : l’ensemble de la journée compte. Sans collation, les repères sont redistribués sur les trois repas ; les repas déjà prévus restent inchangés.")
+        if data["recettes"]:
+            with st.form("make_day_type"):
+                choices = {}
+                for meal, goal in allocations.items():
+                    choices[meal] = (
+                        st.selectbox(f"Recette pour {meal.lower()}", ["À choisir"] + sorted(data["recettes"])),
+                        st.number_input(f"Poids net cuit du plat entier — {meal.lower()} (g)", min_value=0.0, step=1.0))
+                replace = st.checkbox("Remplacer le programme prévu pour cette date") if live_plans else True
+                st.caption("Cette proposition répartit les calories entre vos recettes et affiche les macros obtenues ; elle ne garantit pas de satisfaire tous les repères nutritionnels.")
+                if st.form_submit_button("Calculer et prévoir cette journée"):
+                    try:
+                        if live_plans and not replace:
+                            raise ValueError("Un programme existe déjà. Confirmez son remplacement ou ajoutez un repas individuellement.")
+                        proposals = []
+                        for meal, (recipe_name, cooked) in choices.items():
+                            if recipe_name == "À choisir":
+                                raise ValueError(f"Choisissez une recette pour {meal.lower()}.")
+                            proposals.append(entry_from_recipe(recipe_name, data["recettes"][recipe_name], cooked, allocations[meal]["kcal"], meal))
+                        old = [{**entry, "retire": True} for entry in planned]
+                        if persist("planning", change_plan(data, day, old + proposals)):
+                            st.session_state._notice = "Journée prévue. Rien n’a encore été ajouté aux repas mangés."
+                            st.rerun()
+                    except ValueError as error:
+                        st.error(str(error))
+    st.markdown("#### Prévoir ou ajouter un repas")
+    meal = st.selectbox("Repas à préparer", list(allocations), key="day_meal")
+    if data["recettes"]:
+        with st.expander("Une portion de mes recettes"):
+            with st.form(f"day_recipe_{meal}"):
+                name = st.selectbox("Recette à prévoir", sorted(data["recettes"]))
+                cooked = st.number_input("Poids net cuit du plat entier pour ce repas (g)", min_value=0.0, step=1.0)
+                kcal = st.number_input("Calories prévues pour cette portion", min_value=0.0, value=float(allocations[meal]["kcal"]), step=25.0)
+                if st.form_submit_button("Prévoir cette portion"):
+                    try:
+                        entry = entry_from_recipe(name, data["recettes"][name], cooked, kcal, meal)
+                        if persist("planning", change_plan(data, day, [*planned, entry])):
+                            st.session_state._notice = "Portion prévue. Marquez-la comme mangée quand vous la consommez."
+                            st.rerun()
+                    except ValueError as error:
+                        st.error(str(error))
+    library = data.get("garde_manger", {})
+    if library:
+        with st.expander("Un aliment de ma liste"):
+            with st.form(f"day_food_{meal}"):
+                name = st.selectbox("Aliment à prévoir", sorted(library))
+                grams = st.number_input("Quantité prévue de cet aliment (g)", min_value=0.0, value=100.0, step=1.0)
+                if st.form_submit_button("Prévoir cet aliment"):
+                    try:
+                        entry = entry_from_food(name, library[name], grams, meal)
+                        if persist("planning", change_plan(data, day, [*planned, entry])):
+                            st.session_state._notice = "Aliment prévu. Il n’est pas encore décompté comme mangé."
+                            st.rerun()
+                    except ValueError as error:
+                        st.error(str(error))
+    if not library and not data["recettes"]:
+        st.info("Créez une fiche dans Ingrédients ou une recette pour commencer le programme de la journée.")
+
+    st.markdown("#### Mon programme prévu")
+    if live_plans:
+        st.table(day_table(live_plans))
+        st.caption(f"Programme entier : {rounded(predicted['kcal'], 1):f} kcal. Ce total inclut aussi les portions déjà marquées mangées.")
+        planned_gap = day_balance(targets, live_plans)
+        summary = []
+        for key in ("kcal", *NUTRIENTS):
+            gap = planned_gap[key]
+            label = "kcal" if key == "kcal" else NUTRIENTS[key].lower()
+            summary.append(f"{label} : données incomplètes" if gap is None else
+                           f"{label} : {'au-dessus' if gap < 0 else 'en dessous'} du repère de {rounded(abs(gap), 1):f}")
+        st.caption("Comparaison du programme aux repères — " + " · ".join(summary))
+        for entry in live_plans:
+            already = any(event.get("plan_id") == entry["id"] and not event.get("annule") for event in eaten)
+            with st.expander(f"{entry['repas']} · {entry['nom']} · {entry['poids']:g} g" + (" · mangé" if already else "")):
+                actual = st.number_input("Quantité réellement mangée (g)", min_value=0.0, value=float(entry["poids"]),
+                                         step=1.0, key=f"actual_{entry['id']}")
+                if st.button("J’ai mangé cette portion", key=f"eat_{entry['id']}", disabled=already or selected_date > today_paris()):
+                    try:
+                        new_entries = record_consumption(eaten, entry, actual)
+                        if persist("journal", {**journal, day: new_entries}):
+                            st.session_state._notice = "Portion ajoutée à ce que vous avez réellement mangé."
+                            st.rerun()
+                    except ValueError as error:
+                        st.error(str(error))
+                if st.button("Retirer du programme prévu", key=f"unplan_{entry['id']}"):
+                    modified = [{**item, "retire": True} if item["id"] == entry["id"] else item for item in planned]
+                    if persist("planning", change_plan(data, day, modified)):
+                        st.rerun()
+        if selected_date > today_paris():
+            st.caption("La consommation ne peut être enregistrée que pour aujourd’hui ou une journée passée.")
+    else:
+        st.info("Aucun repas prévu pour cette date. Le bilan consommé reste indépendant de votre programme.")
+    removed = [entry for entry in planned if entry.get("retire")]
+    if removed:
+        with st.expander("Portions retirées : restaurer le programme"):
+            for entry in removed:
+                if st.button(f"Restaurer au programme : {entry['nom']}", key=f"restore_plan_{entry['id']}"):
+                    restored = [{**item, "retire": False} if item["id"] == entry["id"] else item for item in planned]
+                    if persist("planning", change_plan(data, day, restored)):
+                        st.rerun()
+    active = [event for event in eaten if not event.get("annule")]
+    if active:
+        st.markdown("#### Mon journal des repas mangés")
+        st.table(day_table(active))
+        for index, event in enumerate(eaten):
+            if event.get("annule"):
+                continue
+            if st.button(f"Annuler l’enregistrement : {event.get('nom', event.get('recette', 'Repas'))}", key=f"cancel_eat_{day}_{index}"):
+                changed = copy.deepcopy(eaten)
+                changed[index]["annule"] = True
+                if persist("journal", {**journal, day: changed}):
+                    st.rerun()
+    cancelled = [index for index, event in enumerate(eaten) if event.get("annule")]
+    if cancelled:
+        with st.expander("Enregistrements annulés : restaurer une saisie"):
+            for index in cancelled:
+                event = eaten[index]
+                duplicate = event.get("plan_id") is not None and any(item.get("plan_id") == event["plan_id"] and not item.get("annule") for item in eaten)
+                if st.button(f"Restaurer {event.get('nom', event.get('recette', 'Repas'))}", key=f"restore_{day}_{index}", disabled=duplicate or selected_date > today_paris()):
+                    changed = copy.deepcopy(eaten)
+                    changed[index]["annule"] = False
+                    if persist("journal", {**journal, day: changed}):
+                        st.rerun()
+
+
 def course_notes():
     with st.expander("Ce que les cours changent dans le Portionneur"):
         st.write("Les calories seules ne décrivent pas les apports en protéines, glucides, lipides et fibres. Les recettes affichent désormais ces valeurs pour la portion réellement pesée.")
@@ -560,7 +883,7 @@ def course_notes():
 def main():
     st.set_page_config(page_title="Le Portionneur", page_icon="🥝", layout="centered")
     st.title("🥝 Le Portionneur")
-    st.write("Le bon poids pour les calories que vous choisissez.")
+    st.write("Vos portions, vos repas et votre bilan au quotidien.")
     boot()
     if st.session_state.get("_notice"):
         st.success(st.session_state.pop("_notice"))
@@ -568,17 +891,19 @@ def main():
         st.caption("Vos recettes et contenants sont reliés à votre sauvegarde en ligne.")
     else:
         st.warning("Mode local : vos recettes restent dans cette session uniquement. Téléchargez une sauvegarde avant de quitter.")
-    tabs = st.tabs(["Ma portion", "Recettes", "Ingrédients", "Contenants", "Sauvegarde"])
+    tabs = st.tabs(["Ma journée", "Ma portion", "Recettes", "Ingrédients", "Contenants", "Sauvegarde"])
     data = st.session_state._data
     with tabs[0]:
-        calculator(data)
+        day_dashboard(data)
     with tabs[1]:
-        recipes(data)
+        calculator(data)
     with tabs[2]:
-        ingredients(data)
+        recipes(data)
     with tabs[3]:
-        containers(data)
+        ingredients(data)
     with tabs[4]:
+        containers(data)
+    with tabs[5]:
         backup(st.session_state._data)
     course_notes()
 
