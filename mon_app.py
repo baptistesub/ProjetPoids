@@ -11,6 +11,12 @@ import streamlit as st
 NUTRIENTS = {"prot": "Protéines", "gluc": "Glucides", "lip": "Lipides", "fibres": "Fibres"}
 
 
+def legacy_unknown_macros(record, energy_key="kcal"):
+    return (not record.get("nutrition_verified")
+            and number(record.get(energy_key, 0), "Calories") > 0
+            and all(record.get(key) is None or number(record[key], key) == 0 for key in NUTRIENTS))
+
+
 def normalized_name(name):
     return " ".join("".join(c for c in unicodedata.normalize("NFKD", name.casefold())
                             if not unicodedata.combining(c)).split())
@@ -55,8 +61,9 @@ def food_values(value):
     if not isinstance(value, dict):
         raise ValueError("Fiche ingrédient invalide.")
     result = {"kcal": float(number(value.get("kcal"), "Calories pour 100 g"))}
+    legacy_unknown = legacy_unknown_macros(value)
     for key, label in NUTRIENTS.items():
-        raw = value.get(key)
+        raw = None if legacy_unknown else value.get(key)
         result[key] = None if raw is None else float(number(raw, label))
         if result[key] is not None and result[key] > 100:
             raise ValueError(f"{label} : maximum 100 g pour 100 g d’aliment.")
@@ -66,6 +73,7 @@ def food_values(value):
 def row_from_food(name, weight, food):
     values = food_values(food)
     row = ingredient_row(name, weight, values["kcal"], "pour 100 g")
+    row["nutrition_verified"] = True
     factor = number(weight, "Quantité", positive=True) / 100
     for key in NUTRIENTS:
         if values[key] is not None:
@@ -79,9 +87,14 @@ def nutrient_totals(recipe):
     for key in NUTRIENTS:
         if rows:
             result[key] = (sum((number(row[key], key) for row in rows), Decimal(0))
-                           if all(row.get(key) is not None for row in rows) else None)
+                           if all(row.get(key) is not None and not legacy_unknown_macros(row, "cal") for row in rows) else None)
         else:
             value = recipe.get(f"total_{key}")
+            legacy_totals = {"kcal": recipe.get("total_cal", 0),
+                             **{k: recipe.get(f"total_{k}") for k in NUTRIENTS},
+                             "nutrition_verified": recipe.get("nutrition_verified", False)}
+            if legacy_unknown_macros(legacy_totals):
+                value = None
             result[key] = None if value is None else number(value, key)
     return result
 
@@ -440,7 +453,7 @@ def recipes(data):
         else:
             updated = copy.deepcopy(data["recettes"])
             previous = updated.get(choice, {})
-            value = {"total_cal": float(total), "ingredients": copy.deepcopy(rows)}
+            value = {"total_cal": float(total), "ingredients": copy.deepcopy(rows), "nutrition_verified": True}
             # Aucun macronutriment manquant n’est présenté comme un zéro connu.
             for field, row_key in ((f"total_{key}", key) for key in NUTRIENTS):
                 if rows and all(row_key in row for row in rows):
@@ -528,7 +541,7 @@ def ingredients(data):
             elif name in library and name != selection and not confirmed:
                 st.error("Ce nom existe déjà. Confirmez le remplacement ou choisissez un autre nom.")
             else:
-                record = {"kcal": kcal, **values, "source": source.strip()}
+                record = {"kcal": kcal, **values, "source": source.strip(), "nutrition_verified": True}
                 if persist("garde_manger", {**library, name: record}):
                     st.session_state._notice = "Ingrédient mémorisé : il est prêt dans l’ajout rapide des recettes."
                     st.rerun()
