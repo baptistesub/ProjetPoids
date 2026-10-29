@@ -17,13 +17,39 @@ MEAL_WEIGHTS = {"Petit déjeuner": 25, "Déjeuner": 35, "Dîner": 30, "Collation
 DAY_CONFIG_KEY = "_portionneur_journee_v1"
 
 
+def automatic_targets(kcal, protein_percent=20, fat_percent=35, fibres=30):
+    energy = number(kcal, "Calories", positive=True)
+    protein = number(protein_percent, "Part des protéines")
+    fat = number(fat_percent, "Part des lipides")
+    if protein + fat >= 100:
+        raise ValueError("Gardez une part pour les glucides : protéines + lipides doivent être inférieurs à 100 %.")
+    return {"kcal": float(energy), "prot": float(energy * protein / 400),
+            "lip": float(energy * fat / 900), "gluc": float(energy * (100 - protein - fat) / 400),
+            "fibres": float(number(fibres, "Fibres"))}
+
+
+def estimate_energy(sex, age, height_cm, weight, activity=1.5, reduction_percent=10):
+    age, height, weight, activity, reduction = [float(number(value, label, positive=True))
+        for value, label in ((age, "Âge"), (height_cm, "Taille"), (weight, "Poids"), (activity, "Activité"))] + [float(number(reduction_percent, "Réduction"))]
+    if not 18 <= age <= 100 or not 120 <= height <= 230 or not 30 <= weight <= 300:
+        raise ValueError("Estimation réservée aux adultes : vérifiez l’âge, la taille et le poids.")
+    if sex not in ("Homme", "Femme") or not 1.4 <= activity <= 2.4 or not 0 <= reduction <= 20:
+        raise ValueError("Vérifiez l’équation, l’activité et la réduction (0 à 20 %).")
+    bmi = weight / (height / 100) ** 2
+    if reduction and bmi < 18.5:
+        raise ValueError("L’outil ne propose pas de réduction calorique avec cet IMC. Demandez un objectif adapté à un professionnel.")
+    rest = (1.083 if sex == "Homme" else 0.963) * weight ** .48 * (height / 100) ** .5 * age ** -.13 * 1000 / 4.1855
+    maintenance = rest * activity
+    return {"rest": rest, "maintenance": maintenance, "target": maintenance * (1 - reduction / 100)}
+
+
 def today_paris():
     return datetime.now(ZoneInfo("Europe/Paris")).date()
 
 
 def day_config(data):
     value = data.get("planning", {}).get(DAY_CONFIG_KEY, {})
-    return {"targets": {**DAY_DEFAULTS, **value.get("targets", {})},
+    return {**value, "targets": {**DAY_DEFAULTS, **value.get("targets", {})},
             "snack": value.get("snack", True), "days": copy.deepcopy(value.get("days", {}))}
 
 
@@ -329,6 +355,9 @@ def validate_data(data):
             raise ValueError("Configuration du planning invalide.")
         if not isinstance(config.get("targets", {}), dict) or not isinstance(config.get("snack", True), bool):
             raise ValueError("Repères de la journée invalides.")
+        if config.get("nutrition_mode", "auto") not in ("auto", "manual"):
+            raise ValueError("Mode de répartition invalide.")
+        automatic_targets(1, config.get("protein_percent", 20), config.get("fat_percent", 35))
         for key, value in config.get("targets", {}).items():
             if key not in DAY_DEFAULTS:
                 raise ValueError("Repère nutritionnel inconnu.")
@@ -710,19 +739,65 @@ def day_dashboard(data):
     live_plans = [entry for entry in planned if not entry.get("retire")]
     allocations = meal_targets(targets, config["snack"])
 
+    st.info(f"Mon objectif enregistré : {readable_amount(targets['kcal'])} kcal par jour · "
+            f"{readable_amount(targets['prot'])} g de protéines · {readable_amount(targets['gluc'])} g de glucides · "
+            f"{readable_amount(targets['lip'])} g de lipides · {readable_amount(targets['fibres'])} g de fibres")
+
     with st.expander("Mes repères quotidiens et ma collation"):
-        st.caption("Point de départ discuté ensemble, à ajuster : environ 2 400 kcal, 120 g de protéines, 265 g de glucides, 95 g de lipides et 30 g de fibres. Ce ne sont pas des besoins mesurés ni une garantie de perte de poids.")
-        with st.form("day_targets_form"):
-            new_targets = {"kcal": st.number_input("Repère calories par jour (kcal)", min_value=1.0, value=float(targets["kcal"]), step=50.0)}
+        source = st.radio("Comment choisir mes calories ?", ["J’ai déjà un objectif calorique", "Estimer avec mon profil"])
+        if source == "Estimer avec mon profil":
+            st.caption("Profil utilisé dans cette session uniquement. Estimation adulte par l’équation de Black ; le maintien réel varie avec l’activité et l’évolution du poids.")
+            sex = st.selectbox("Équation", ["Homme", "Femme"])
+            age = st.number_input("Âge (ans)", min_value=18, max_value=100, value=30)
+            height = st.number_input("Taille (cm)", min_value=120.0, max_value=230.0, value=170.0)
+            weight = st.number_input("Poids actuel (kg)", min_value=30.0, max_value=300.0, value=70.0)
+            activity = st.selectbox("Activité habituelle", [1.4, 1.5, 1.6, 1.8, 2.0, 2.4], index=1,
+                format_func=lambda value: {1.4: "Très peu de déplacements (1,4)", 1.5: "Entre journées assises et petits déplacements (1,5)",
+                1.6: "Petits déplacements réguliers (1,6)", 1.8: "Activité importante (1,8)", 2.0: "Travail physique intense (2,0)", 2.4: "Activité très intense (2,4)"}[value])
+            reduction = st.number_input("Réduction choisie par rapport au maintien (%)", min_value=0.0, max_value=20.0, value=10.0, step=1.0)
+            st.caption("0 % correspond au maintien estimé. Une réduction est un choix de départ à réévaluer, sans garantie de rythme de perte de poids.")
+            try:
+                estimate = estimate_energy(sex, age, height, weight, activity, reduction)
+                proposed = float(Decimal(str(estimate['target'] / 50)).quantize(Decimal('1'), rounding=ROUND_HALF_UP) * 50)
+                st.write(f"Maintien estimé : {estimate['maintenance']:.0f} kcal/j · objectif proposé : {proposed:.0f} kcal/j")
+                if st.button("Utiliser cette estimation"):
+                    st.session_state.day_goal_kcal = proposed
+            except ValueError as exc:
+                st.error(str(exc))
+            st.markdown("Méthode : [équation de Black et niveaux d’activité (AFDN)](https://www.afdn.org/sites/www.afdn.org/files/documentation/2021-11/Besoins%20et%20apports%20nutritionnels.pdf)")
+        energy = st.number_input("Repère calories par jour (kcal)", min_value=1.0, value=float(targets["kcal"]), step=50.0, key="day_goal_kcal")
+        mode = st.radio("Répartition des macronutriments", ["Automatique selon mes calories", "Saisie manuelle en grammes"],
+                        index=1 if config.get("nutrition_mode") == "manual" else 0)
+        new_targets = None
+        protein_percent, fat_percent = config.get("protein_percent", 20.0), config.get("fat_percent", 35.0)
+        if mode == "Automatique selon mes calories":
+            st.caption("Répartition de départ : 20 % protéines, 45 % glucides, 35 % lipides. Modifiez les pourcentages si besoin : les glucides complètent le total. Conversion : 4 kcal/g pour protéines et glucides, 9 kcal/g pour lipides ; fibres suivies séparément.")
+            protein_percent = st.number_input("Part des protéines (%)", min_value=0.0, max_value=100.0, value=float(protein_percent), step=1.0)
+            fat_percent = st.number_input("Part des lipides (%)", min_value=0.0, max_value=100.0, value=float(fat_percent), step=1.0)
+            fibre_goal = st.number_input("Repère fibres par jour (g)", min_value=0.0, value=float(targets["fibres"]), step=1.0)
+            try:
+                new_targets = automatic_targets(energy, protein_percent, fat_percent, fibre_goal)
+                st.write(f"Aperçu : {new_targets['prot']:.1f} g de protéines · {new_targets['gluc']:.1f} g de glucides · {new_targets['lip']:.1f} g de lipides")
+            except ValueError as exc:
+                st.error(str(exc))
+        else:
+            new_targets = {"kcal": energy}
             for key, label in NUTRIENTS.items():
                 new_targets[key] = st.number_input(f"Repère {label.lower()} par jour (g)", min_value=0.0,
                                                     value=float(targets[key]), step=1.0)
-            snack = st.checkbox("Prévoir une collation facultative", value=config["snack"])
-            if st.form_submit_button("Enregistrer mes repères"):
-                changed = {**config, "targets": new_targets, "snack": snack}
-                if persist("planning", set_day_config(data, changed)):
-                    st.session_state._notice = "Repères enregistrés. Le bilan reflète vos objectifs actuels ; les repas déjà saisis sont conservés."
-                    st.rerun()
+            macro_energy = 4 * (new_targets['prot'] + new_targets['gluc']) + 9 * new_targets['lip']
+            if abs(macro_energy - energy) > max(50, energy * .05):
+                st.warning(f"Vos macros représentent environ {macro_energy:.0f} kcal, contre {energy:.0f} kcal choisies. Vérifiez la cohérence de votre saisie.")
+        snack = st.checkbox("Prévoir une collation facultative", value=config["snack"])
+        st.caption("L’aperçu ne remplace votre objectif qu’après « Enregistrer mes repères ». Les portions déjà prévues ou mangées restent inchangées.")
+        if st.button("Enregistrer mes repères", disabled=new_targets is None):
+            changed = {**config, "targets": new_targets, "snack": snack,
+                       "nutrition_mode": "manual" if mode == "Saisie manuelle en grammes" else "auto",
+                       "protein_percent": protein_percent, "fat_percent": fat_percent}
+            if persist("planning", set_day_config(data, changed)):
+                st.session_state._notice = "Repères enregistrés. Le bilan reflète vos objectifs actuels ; les repas déjà saisis sont conservés."
+                st.rerun()
+        st.caption("Conseil : raisonnez sur l’ensemble de la journée et variez les aliments ; atteindre les macros ne garantit pas à lui seul tous les apports nécessaires.")
     totals = day_totals(eaten)
     balances = day_balance(targets, eaten)
     predicted = day_totals(live_plans)
@@ -878,13 +953,6 @@ def day_dashboard(data):
                         st.rerun()
 
 
-def course_notes():
-    with st.expander("Ce que les cours changent dans le Portionneur"):
-        st.write("Les calories seules ne décrivent pas les apports en protéines, glucides, lipides et fibres. Les recettes affichent désormais ces valeurs pour la portion réellement pesée.")
-        st.write("Les besoins sportifs varient avec la pratique, sa durée et l’individu. Le Portionneur calcule les quantités ; il ne fixe pas automatiquement une restriction calorique ou une dose de complément.")
-        st.caption("Supports : Nutrition du sportif, Chifflot, 2026, diapositives 13–14, 23–26 et 30–31 ; Ronéo Nutrition sportive, 2025, sections macronutriments. Certaines fourchettes diffèrent ou comportent des ambiguïtés ; elles ne sont pas utilisées comme prescription.")
-
-
 def main():
     st.set_page_config(page_title="Le Portionneur", page_icon="🥝", layout="centered")
     st.title("🥝 Le Portionneur")
@@ -910,7 +978,6 @@ def main():
         containers(data)
     with tabs[5]:
         backup(st.session_state._data)
-    course_notes()
 
 
 if __name__ == "__main__":
